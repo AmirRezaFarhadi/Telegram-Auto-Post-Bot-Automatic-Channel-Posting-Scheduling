@@ -25,13 +25,13 @@ jobs:
       - name: Restore Telethon session
         run: |
           mkdir -p sessions
-          echo "${{ secrets.TELETHON_SESSION }}" | base64 -d > sessions/my_forward_bot2.session
+          echo "${{ secrets.TELETHON_SESSION }}" | base64 -d > sessions/gh_forward_bot.session
 
       - name: Run bot
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
-          SESSION_NAME: ${{ secrets.SESSION_NAME }}
+          SESSION_NAME: gh_forward_bot
           SOURCES: ${{ secrets.SOURCES }}
           DESTINATION: ${{ secrets.DESTINATION }}
           FOOTER: ${{ secrets.FOOTER }}
