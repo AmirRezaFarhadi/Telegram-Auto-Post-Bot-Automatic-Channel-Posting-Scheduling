@@ -506,12 +506,9 @@
 
 
 
-
-
 # -*- coding: utf-8 -*-
 """
-Mirror & Scheduler for Telegram channels
-(نسخه Bot Token)
+Mirror & Scheduler for Telegram channels (نسخه Bot Token)
 -------------------------------------------------
 ENV نمونه (api.env):
 API_ID=123456
@@ -521,19 +518,13 @@ DESTINATION=@your_channel_or_chat
 SOURCES=@src1;@src2
 FOOTER=💡 @aiwithamir
 SEND_DELAY_SEC=0.5
-
-# تنظیمات زمان‌بندی:
 TIMEZONE=Asia/Tehran
 POSTS_PER_DAY=10
 START_LOCAL=10:00
 END_LOCAL=22:00
 """
 
-import os
-import re
-import sys
-import asyncio
-import sqlite3
+import os, re, sys, asyncio, sqlite3
 from datetime import datetime, time, timedelta, date
 from typing import Optional, Dict, List, Tuple
 
@@ -568,14 +559,12 @@ except ValueError:
     print("[!] API_ID باید عدد باشد.")
     sys.exit(1)
 
-API_HASH      = _must_env("API_HASH")
-BOT_TOKEN     = _must_env("BOT_TOKEN")   # 🔹 Bot Token
-DEST          = _must_env("DESTINATION")
+API_HASH  = _must_env("API_HASH")
+BOT_TOKEN = _must_env("BOT_TOKEN")
+DEST      = _must_env("DESTINATION")
 
-# Footer
 FOOTER = os.getenv("FOOTER", "💡 @aiwithamir").strip()
-CAPTION_MAX = 1024
-TEXT_MAX    = 4096
+CAPTION_MAX, TEXT_MAX = 1024, 4096
 
 raw_sources = os.getenv("SOURCES", "") or os.getenv("SOURCE", "")
 SOURCES_RAW: List[str] = [p.strip() for p in re.split(r"[;,\n]", raw_sources) if p.strip()]
@@ -585,17 +574,13 @@ if not SOURCES_RAW:
 print(f"[*] Sources: {SOURCES_RAW}")
 
 SEND_DELAY_SEC = float(os.getenv("SEND_DELAY_SEC", "0.5"))
-
-# سقف سخت تلگرام
 SCHEDULE_LIMIT = 100
 
-# Timezone & schedule window
-TIMEZONE     = os.getenv("TIMEZONE", "Asia/Tehran").strip()
-TZ           = ZoneInfo(TIMEZONE)
+TIMEZONE   = os.getenv("TIMEZONE", "Asia/Tehran").strip()
+TZ         = ZoneInfo(TIMEZONE)
 
 def _parse_hhmm(s: str) -> time:
-    s = s.strip()
-    hh, mm = s.split(":")
+    hh, mm = s.strip().split(":")
     return time(int(hh), int(mm))
 
 POSTS_PER_DAY = int(os.getenv("POSTS_PER_DAY", "10"))
@@ -603,7 +588,6 @@ START_LOCAL   = _parse_hhmm(os.getenv("START_LOCAL", "10:00"))
 END_LOCAL     = _parse_hhmm(os.getenv("END_LOCAL", "22:00"))
 
 # ==================== CLIENT ====================
-# دیگه Session فایل نمی‌سازیم → مستقیم با Bot Token استارت می‌کنیم
 client = TelegramClient("bot_session", API_ID, API_HASH)
 
 # ==================== DB ====================
@@ -614,53 +598,63 @@ def _connect_db():
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
-# ... 👇 بقیه کد DB, Utils, Scheduler, Sender, Backfill, Listener
-# ⚠️ همون چیزی که دادی بدون تغییر می‌مونه
-# (هیچ جای کد منطق حذف نشده، فقط تغییر Client انجام شده)
+def _ensure_schema():
+    with _connect_db() as conn:
+        c = conn.cursor()
+        c.execute("""CREATE TABLE IF NOT EXISTS processed(
+                        src_chat TEXT, src_msg_id INTEGER,
+                        PRIMARY KEY(src_chat, src_msg_id))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS mapping(
+                        src_chat TEXT, src_msg_id INTEGER,
+                        dst_msg_id INTEGER,
+                        PRIMARY KEY(src_chat, src_msg_id))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS meta(
+                        key TEXT PRIMARY KEY, val TEXT)""")
+
+def init_db():
+    _ensure_schema()
+
+def was_processed(chat_key, mid):
+    with _connect_db() as conn:
+        return conn.execute("SELECT 1 FROM processed WHERE src_chat=? AND src_msg_id=?", (chat_key, mid)).fetchone() is not None
+
+def mark_processed(chat_key, mid):
+    with _connect_db() as conn:
+        conn.execute("INSERT OR IGNORE INTO processed VALUES(?,?)", (chat_key, mid))
+
+def save_mapping(chat_key, src_id, dst_id):
+    with _connect_db() as conn:
+        conn.execute("INSERT OR REPLACE INTO mapping VALUES(?,?,?)", (chat_key, src_id, dst_id))
+
+def get_mapping(chat_key, src_id):
+    with _connect_db() as conn:
+        row = conn.execute("SELECT dst_msg_id FROM mapping WHERE src_chat=? AND src_msg_id=?", (chat_key, src_id)).fetchone()
+        return row[0] if row else None
+
+def meta_get(k, d=None):
+    with _connect_db() as conn:
+        row = conn.execute("SELECT val FROM meta WHERE key=?", (k,)).fetchone()
+        return row[0] if row else d
+
+def meta_set(k, v):
+    with _connect_db() as conn:
+        conn.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))
 
 # ==================== MAIN ====================
 async def main():
     init_db()
-    await client.start(bot_token=BOT_TOKEN)   # 🔹 لاگین با Bot Token
+    await client.start(bot_token=BOT_TOKEN)
 
-    # مقصد: یوزرنیم/آیدی/لینک جوین
     try:
         dest_entity = await client.get_entity(DEST)
     except Exception as e:
         print(f"[!] Could not resolve DESTINATION {DEST!r}: {e}")
         return
 
-    # رزولوشن سورس‌ها
-    source_entities: List[Tuple[str, object]] = []
-    source_id_to_key: Dict[int, str] = {}
-
-    for s in SOURCES_RAW:
-        try:
-            ent = await client.get_entity(s)
-        except Exception as e:
-            print(f"[!] Could not resolve source {s!r}: {e}")
-            continue
-        key = _source_key(s if s.startswith("@") else (getattr(ent, "username", None) or str(ent.id)))
-        source_entities.append((key, ent))
-        source_id_to_key[getattr(ent, "id")] = key
-
-    if not source_entities:
-        print("[!] No valid sources resolved. Exiting.")
-        return
-
-    # بک‌فیل
-    for key, ent in source_entities:
-        print(f"[*] Backfilling {key} ...")
-        await backfill_history(key, ent, dest_entity)
-        scheduled_now = await count_scheduled(dest_entity)
-        if scheduled_now >= SCHEDULE_LIMIT:
-            print(f"[*] STOP backfill (scheduled={scheduled_now}/{SCHEDULE_LIMIT}). Resume on next run.")
-            break
-
     print("[*] Listening...")
-    @client.on(events.NewMessage(chats=[ent for _, ent in source_entities]))
+    @client.on(events.NewMessage(chats=SOURCES_RAW))
     async def listener(event):
-        await handle_new_message(event, dest_entity, source_id_to_key)
+        print(f"[LIVE] {event.message.id} from {event.chat_id}")
 
     await client.run_until_disconnected()
 
