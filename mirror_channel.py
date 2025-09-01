@@ -85,7 +85,7 @@ SEND_DELAY_SEC = float(os.getenv("SEND_DELAY_SEC", "0.5"))
 SCHEDULE_LIMIT = 100
 
 # Timezone & schedule window
-TIMEZONE     = os.getenv("TIMEZONE", "Asia/Tehran")
+TIMEZONE     = os.getenv("TIMEZONE", "Asia/Tehran").strip()
 TZ           = ZoneInfo(TIMEZONE)
 
 def _parse_hhmm(s: str) -> time:
