@@ -1,7 +1,7 @@
 name: Telegram Forwarder Bot
 
 on:
-  workflow_dispatch:    # اجرا دستی
+  workflow_dispatch:    # اجرای دستی
   schedule:
     - cron: "*/30 * * * *"   # هر ۳۰ دقیقه یک بار اجرا میشه
 
@@ -9,7 +9,8 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -17,7 +18,9 @@ jobs:
           python-version: "3.10"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          ls -la
+          pip install -r requirements.txt
 
       - name: Run bot
         env:
