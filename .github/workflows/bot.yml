@@ -21,6 +21,12 @@ jobs:
         run: |
           ls -la
           pip install -r requirements.txt
+
+      - name: Restore Telethon session
+        run: |
+          mkdir -p sessions
+          echo "${{ secrets.TELETHON_SESSION }}" | base64 -d > sessions/my_forward_bot2.session
+
       - name: Run bot
         env:
           API_ID: ${{ secrets.API_ID }}
