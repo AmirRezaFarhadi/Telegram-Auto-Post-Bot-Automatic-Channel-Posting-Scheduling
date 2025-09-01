@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           ls -la
-          pip install -r requirements.txt
+          pip install -r Forwarder\ bot/requirements.txt
 
       - name: Run bot
         env:
