@@ -22,16 +22,11 @@ jobs:
           ls -la
           pip install -r requirements.txt
 
-      - name: Restore Telethon session
-        run: |
-          mkdir -p sessions
-          echo "${{ secrets.TELETHON_SESSION }}" | base64 -d > sessions/gh_forward_bot.session
-
       - name: Run bot
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
-          SESSION_NAME: gh_forward_bot
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           SOURCES: ${{ secrets.SOURCES }}
           DESTINATION: ${{ secrets.DESTINATION }}
           FOOTER: ${{ secrets.FOOTER }}
