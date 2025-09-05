@@ -1,371 +1,538 @@
 # # -*- coding: utf-8 -*-
 # """
-# Mirror & Scheduler for Telegram channels
-# - ۱۰ پست در روز بین 10:00 تا 22:00 (به صورت پیش‌فرض)، با فاصله یکنواخت و امن
-# - TZ-aware (با ZoneInfo) و ارسال schedule به UTC
-# - اتمیک بودن انتخاب اسلات با قفل SQLite (BEGIN IMMEDIATE)
-# - حفظ reply-chain بین پست‌های منتقل‌شده
-# - حذف یوزرنیم/لینک سورس‌ها از متن و افزودن FOOTER
-# - رعایت سقف Scheduled تلگرام (~100)
-# -------------------------------------------------
-# ENV نمونه (api.env):
-# API_ID=123456
-# API_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-# DESTINATION=@your_channel_or_chat
-# SOURCES=@src1;@src2
-# SESSION_NAME=forward_bot_session
-# FOOTER=💡 @aiwithamir
-# SEND_DELAY_SEC=0.5
-
-# # تنظیمات زمان‌بندی:
-# TIMEZONE=Asia/Tehran
-# POSTS_PER_DAY=10
-# START_LOCAL=10:00
-# END_LOCAL=22:00
+# Telegram Mirror Bot - Aiogram 3.x + Telethon
+# --------------------------------------------
+# - Force Join (فقط بار اول)
+# - بلاک کاربرانی که جوین میدن و بعد لفت میکنن (با user_id و PHONE)
+# - پشتیبانی از کانال‌های پرایویت و پابلیک
+# - اسکجوال مستقیم از سورس → مقصد
+# - پنل ادمین با پسورد
 # """
 
 # import os
 # import re
-# import sys
+# import random
 # import asyncio
 # import sqlite3
-# from datetime import datetime, time, timedelta, date
-# from typing import Optional, Dict, List, Tuple
+# from datetime import datetime, timedelta
+# from typing import Optional, List
 
-# from dotenv import load_dotenv, find_dotenv
-# from telethon import TelegramClient, events
-# from telethon.tl.types import Message, MessageMediaPoll
-# from telethon.tl import functions
-# from zoneinfo import ZoneInfo
+# from aiogram import Bot, Dispatcher, F
+# from aiogram.filters import CommandStart, Command
+# from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# # ==================== ENV ====================
-# def _load_env():
-#     script_dir = os.path.dirname(os.path.abspath(__file__))
-#     path = os.path.join(script_dir, "api.env")
-#     if os.path.exists(path):
-#         load_dotenv(path, override=True)
-#     else:
-#         load_dotenv(find_dotenv(filename="api.env", usecwd=True), override=True)
+# from telethon import TelegramClient
+# from telethon.tl.types import Message as TMessage, MessageMediaPoll
 
-# print("[*] Loading env...")
-# _load_env()
+# # ==================== CONFIG DB ====================
+# DB_PATH = "bot_config.sqlite"
 
-# def _must_env(key: str) -> str:
-#     v = os.getenv(key)
-#     if not v:
-#         print(f"[!] Missing environment variable: {key}")
-#         sys.exit(1)
-#     return v
-
-# try:
-#     API_ID = int(_must_env("API_ID"))
-# except ValueError:
-#     print("[!] API_ID باید عدد باشد.")
-#     sys.exit(1)
-
-# API_HASH      = _must_env("API_HASH")
-# DEST          = _must_env("DESTINATION")
-# SESSION_NAME  = os.getenv("SESSION_NAME", "forward_bot_session")
-
-# # Footer
-# FOOTER = os.getenv("FOOTER", "💡 @aiwithamir").strip()
-# CAPTION_MAX = 1024
-# TEXT_MAX    = 4096
-
-# raw_sources = os.getenv("SOURCES", "") or os.getenv("SOURCE", "")
-# SOURCES_RAW: List[str] = [p.strip() for p in re.split(r"[;,\n]", raw_sources) if p.strip()]
-# if not SOURCES_RAW:
-#     print("[!] No source channels in SOURCE/SOURCES")
-#     sys.exit(1)
-# print(f"[*] Sources: {SOURCES_RAW}")
-
-# SEND_DELAY_SEC = float(os.getenv("SEND_DELAY_SEC", "0.5"))
-
-# # سقف سخت تلگرام
-# SCHEDULE_LIMIT = 100
-
-# # Timezone & schedule window
-# TIMEZONE     = os.getenv("TIMEZONE", "Asia/Tehran").strip()
-# TZ           = ZoneInfo(TIMEZONE)
-
-# def _parse_hhmm(s: str) -> time:
-#     s = s.strip()
-#     hh, mm = s.split(":")
-#     return time(int(hh), int(mm))
-
-# POSTS_PER_DAY = int(os.getenv("POSTS_PER_DAY", "10"))
-# START_LOCAL   = _parse_hhmm(os.getenv("START_LOCAL", "10:00"))
-# END_LOCAL     = _parse_hhmm(os.getenv("END_LOCAL", "22:00"))
-
-# # ==================== CLIENT ====================
-# SESSIONS_DIR = "sessions"
-# os.makedirs(SESSIONS_DIR, exist_ok=True)
-# SESSION_PATH = os.path.join(SESSIONS_DIR, SESSION_NAME)
-# client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
-
-# # ==================== DB ====================
-# DB_PATH = "mirror_state.sqlite"
-
-# def _connect_db():
+# def cfg_connect():
 #     conn = sqlite3.connect(DB_PATH)
 #     conn.execute("PRAGMA journal_mode=WAL;")
 #     return conn
 
-# def _table_has_cols(conn, table, cols):
-#     cur = conn.cursor()
-#     try:
-#         cur.execute(f"PRAGMA table_info({table})")
-#         names = {r[1] for r in cur.fetchall()}
-#         return all(c in names for c in cols)
-#     except sqlite3.Error:
-#         return False
+# def cfg_init():
+#     with cfg_connect() as conn:
+#         conn.execute("""CREATE TABLE IF NOT EXISTS config(
+#                             key TEXT PRIMARY KEY,
+#                             val TEXT)""")
+#         conn.execute("""CREATE TABLE IF NOT EXISTS sent_posts(
+#                             msg_id INTEGER PRIMARY KEY)""")
+#         conn.execute("""CREATE TABLE IF NOT EXISTS joined_users(
+#                             user_id INTEGER PRIMARY KEY)""")
+#         conn.execute("""CREATE TABLE IF NOT EXISTS blocked_users(
+#                             user_id INTEGER PRIMARY KEY,
+#                             phone TEXT)""")
 
-# def _ensure_schema():
-#     with _connect_db() as conn:
-#         ok1 = _table_has_cols(conn, "processed", {"src_chat", "src_msg_id"})
-#         ok2 = _table_has_cols(conn, "mapping", {"src_chat", "src_msg_id", "dst_msg_id"})
-#         ok3 = _table_has_cols(conn, "meta", {"key", "val"})
-#         if ok1 and ok2 and ok3:
-#             return
-#     # backup & rebuild
+# def cfg_set(k, v):
+#     with cfg_connect() as conn:
+#         conn.execute("INSERT OR REPLACE INTO config VALUES(?,?)", (k, v))
+
+# def cfg_get(k, d=None):
+#     with cfg_connect() as conn:
+#         row = conn.execute("SELECT val FROM config WHERE key=?", (k,)).fetchone()
+#         return row[0] if row else d
+
+# def mark_joined(user_id: int):
+#     with cfg_connect() as conn:
+#         conn.execute("INSERT OR IGNORE INTO joined_users VALUES(?)", (user_id,))
+
+# def has_joined(user_id: int) -> bool:
+#     with cfg_connect() as conn:
+#         row = conn.execute("SELECT 1 FROM joined_users WHERE user_id=?", (user_id,)).fetchone()
+#         return bool(row)
+
+# def block_user(user_id: int, phone: Optional[str] = None):
+#     with cfg_connect() as conn:
+#         conn.execute("INSERT OR IGNORE INTO blocked_users VALUES(?,?)", (user_id, phone))
+
+# def is_blocked(user_id: int) -> bool:
+#     with cfg_connect() as conn:
+#         row = conn.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,)).fetchone()
+#         return bool(row)
+
+# def get_blocked():
+#     with cfg_connect() as conn:
+#         return conn.execute("SELECT user_id, phone FROM blocked_users").fetchall()
+
+# def get_users():
+#     with cfg_connect() as conn:
+#         return conn.execute("SELECT user_id FROM joined_users").fetchall()
+
+# def mark_sent(msg_id: int):
+#     with cfg_connect() as conn:
+#         conn.execute("INSERT OR IGNORE INTO sent_posts VALUES(?)", (msg_id,))
+
+# def already_sent(msg_id: int) -> bool:
+#     with cfg_connect() as conn:
+#         row = conn.execute("SELECT 1 FROM sent_posts WHERE msg_id=?", (msg_id,)).fetchone()
+#         return bool(row)
+
+# # ==================== TELETHON CLIENT ====================
+# SESSIONS_DIR = "sessions"
+# os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+# def make_client():
+#     api_id = int(cfg_get("API_ID"))
+#     api_hash = cfg_get("API_HASH")
+#     session_name = cfg_get("SESSION_NAME", "mirror_session")
+#     return TelegramClient(os.path.join(SESSIONS_DIR, session_name), api_id, api_hash)
+
+# async def resolve_channel(client, raw: str):
+#     raw = raw.strip()
 #     try:
-#         if os.path.exists(DB_PATH):
-#             import shutil
-#             ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-#             shutil.copy2(DB_PATH, f"{DB_PATH}.bak-{ts}")
-#             print(f"[DB] Backed up old DB to {DB_PATH}.bak-{ts}")
+#         if raw.startswith("http"):
+#             return await client.get_entity(raw)
+#         elif raw.startswith("@"):
+#             return await client.get_entity(raw)
+#         else:
+#             return await client.get_entity(int(raw))
 #     except Exception as e:
-#         print(f"[DB] Backup warning: {e}")
-
-#     with _connect_db() as conn:
-#         c = conn.cursor()
-#         c.execute("DROP TABLE IF EXISTS processed")
-#         c.execute("DROP TABLE IF EXISTS mapping")
-#         c.execute("DROP TABLE IF EXISTS meta")
-#         c.execute("""CREATE TABLE processed(
-#                         src_chat TEXT, src_msg_id INTEGER,
-#                         PRIMARY KEY(src_chat, src_msg_id))""")
-#         c.execute("""CREATE TABLE mapping(
-#                         src_chat TEXT, src_msg_id INTEGER,
-#                         dst_msg_id INTEGER,
-#                         PRIMARY KEY(src_chat, src_msg_id))""")
-#         c.execute("""CREATE TABLE meta(
-#                         key TEXT PRIMARY KEY, val TEXT)""")
-#     print("[DB] Schema rebuilt")
-
-# def init_db():
-#     with _connect_db() as conn:
-#         c = conn.cursor()
-#         c.execute("""CREATE TABLE IF NOT EXISTS processed(
-#                         src_chat TEXT, src_msg_id INTEGER,
-#                         PRIMARY KEY(src_chat, src_msg_id))""")
-#         c.execute("""CREATE TABLE IF NOT EXISTS mapping(
-#                         src_chat TEXT, src_msg_id INTEGER,
-#                         dst_msg_id INTEGER,
-#                         PRIMARY KEY(src_chat, src_msg_id))""")
-#         c.execute("""CREATE TABLE IF NOT EXISTS meta(
-#                         key TEXT PRIMARY KEY, val TEXT)""")
-#     _ensure_schema()
-
-# def was_processed(chat_key, mid):
-#     with _connect_db() as conn:
-#         c = conn.cursor()
-#         c.execute("SELECT 1 FROM processed WHERE src_chat=? AND src_msg_id=?", (chat_key, mid))
-#         return c.fetchone() is not None
-
-# def mark_processed(chat_key, mid):
-#     with _connect_db() as conn:
-#         c = conn.cursor()
-#         c.execute("INSERT OR IGNORE INTO processed VALUES(?,?)", (chat_key, mid))
-
-# def save_mapping(chat_key, src_id, dst_id):
-#     with _connect_db() as conn:
-#         c = conn.cursor()
-#         c.execute("INSERT OR REPLACE INTO mapping VALUES(?,?,?)", (chat_key, src_id, dst_id))
-
-# def get_mapping(chat_key, src_id):
-#     with _connect_db() as conn:
-#         c = conn.cursor()
-#         c.execute("SELECT dst_msg_id FROM mapping WHERE src_chat=? AND src_msg_id=?", (chat_key, src_id))
-#         row = c.fetchone()
-#         return row[0] if row else None
-
-# def meta_get(k, d=None):
-#     with _connect_db() as conn:
-#         c = conn.cursor()
-#         c.execute("SELECT val FROM meta WHERE key=?", (k,))
-#         r = c.fetchone()
-#         return r[0] if r else d
-
-# def meta_set(k, v):
-#     with _connect_db() as conn:
-#         c = conn.cursor()
-#         c.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))
-
-# # ==================== UTILS ====================
-# def _source_key(s: str) -> str:
-#     """کلید استاندارد برای سورس‌ها (username بدون @ و lowercase؛ اگر آیدی بود همان رشته)."""
-#     s = s.strip()
-#     if s.startswith("@"):
-#         return s[1:].lower()
-#     return s.lower()
-
-# def _local_now() -> datetime:
-#     return datetime.now(TZ)
-
-# def _combine_local(d: date, t: time) -> datetime:
-#     return datetime(d.year, d.month, d.day, t.hour, t.minute, tzinfo=TZ)
-
-# def _build_slots_for_day(d: date) -> List[datetime]:
-#     """
-#     ساخت اسلات‌های یکنواخت بین START_LOCAL و END_LOCAL.
-#     اگر POSTS_PER_DAY=10 و بازه 10:00..22:00 باشد، فاصله ≈ 80 دقیقه می‌شود.
-#     """
-#     if POSTS_PER_DAY <= 1:
-#         return [_combine_local(d, START_LOCAL)]
-#     start_dt = _combine_local(d, START_LOCAL)
-#     end_dt   = _combine_local(d, END_LOCAL)
-#     if end_dt <= start_dt:
-#         # اگر کاربر اشتباه وارد کرد، حداقل یک دقیقه بعد از start
-#         end_dt = start_dt + timedelta(minutes=POSTS_PER_DAY - 1)
-#     total_minutes = int((end_dt - start_dt).total_seconds() // 60)
-#     gap = total_minutes / (POSTS_PER_DAY - 1)
-#     slots = [(start_dt + timedelta(minutes=round(i * gap))) for i in range(POSTS_PER_DAY)]
-#     slots = sorted(min(s, end_dt) for s in slots)
-#     return slots
-
-# # پاکسازی آیدی/لینک سورس‌ها
-# SOURCE_USERNAMES: List[str] = [_source_key(s) for s in SOURCES_RAW if s.startswith("@")]
-
-# def sanitize_text(txt: Optional[str]) -> str:
-#     if not txt:
-#         return ""
-#     cleaned = txt
-#     for u in SOURCE_USERNAMES:
-#         pat = re.compile(rf"(?:@{re.escape(u)}\b|https?://t\.me/{re.escape(u)}\b)", flags=re.IGNORECASE)
-#         cleaned = pat.sub("", cleaned)
-#     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
-#     return cleaned
-
-# # Footer helpers
-# def _has_footer(txt: str, footer: str) -> bool:
-#     if not txt or not footer:
-#         return False
-#     return footer.lower() in txt.lower()
-
-# def apply_footer(txt: Optional[str], is_caption: bool) -> str:
-#     base = (txt or "").rstrip()
-#     footer = FOOTER
-#     if not footer:
-#         limit = CAPTION_MAX if is_caption else TEXT_MAX
-#         return base[:limit]
-#     if _has_footer(base, footer):
-#         limit = CAPTION_MAX if is_caption else TEXT_MAX
-#         return base[:limit]
-#     sep = "\n\n" if base else ""
-#     composed = f"{base}{sep}{footer}".strip()
-#     limit = CAPTION_MAX if is_caption else TEXT_MAX
-#     if len(composed) > limit:
-#         room_for_base = max(0, limit - len(footer) - len(sep))
-#         base_trunc = base[:room_for_base].rstrip()
-#         composed = f"{base_trunc}{(sep if base_trunc else '')}{footer}".strip()
-#     return composed
-
-# # ==================== شمارش Scheduled مقصد ====================
-# async def count_scheduled(dest_entity) -> int:
-#     """
-#     تعداد پیام‌های زمان‌بندی‌شده در چت مقصد را برمی‌گرداند.
-#     اگر خطایی رخ دهد، محافظه‌کارانه سقف (100) را برمی‌گرداند.
-#     """
-#     try:
-#         res = await client(functions.messages.GetScheduledHistoryRequest(
-#             peer=dest_entity,
-#             hash=0
-#         ))
-#         return len(res.messages or [])
-#     except Exception as e:
-#         print(f"[SCHED] count failed: {e}")
-#         return SCHEDULE_LIMIT
-
-# # ==================== SENDER (بدون دانلود/آپلود + حفظ ریپلای + اسکجوال + فوتِر) ====================
-# async def _send_with_reply(src_key: str, msg: Message, dest_entity, sched_dt: datetime):
-#     # نگاشت ریپلای
-#     reply_to = None
-#     if getattr(msg, "reply_to", None) and getattr(msg.reply_to, "reply_to_msg_id", None):
-#         mapped = get_mapping(src_key, msg.reply_to.reply_to_msg_id)
-#         if mapped:
-#             reply_to = mapped
-
-#     clean_text = sanitize_text(getattr(msg, "text", None))
-
-#     # رد Poll
-#     if isinstance(msg.media, MessageMediaPoll):
+#         print(f"❌ Failed to resolve {raw}: {e}")
 #         return None
 
-#     schedule_dt = sched_dt.astimezone(ZoneInfo("UTC"))
+# # ==================== TEXT HELPERS ====================
+# CAPTION_MAX = 1024
+# TEXT_MAX = 4096
 
+# def sanitize_text(txt: Optional[str], sources: List[str], footer: str) -> str:
+#     if not txt:
+#         txt = ""
+#     cleaned = txt
+#     for u in sources:
+#         key = u.lower().lstrip("@")
+#         pat = re.compile(rf"(?:@{re.escape(key)}\b|https?://t\.me/{re.escape(key)}\b)", flags=re.IGNORECASE)
+#         cleaned = pat.sub("", cleaned)
+#     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+#     if footer and footer.lower() not in cleaned.lower():
+#         sep = "\n\n" if cleaned else ""
+#         cleaned = f"{cleaned}{sep}{footer}"
+#     limit = CAPTION_MAX if len(cleaned) <= CAPTION_MAX else TEXT_MAX
+#     return cleaned[:limit]
+
+# # ==================== FORWARDER ====================
+# async def schedule_from_source(client, src, dest, footer):
+#     """اسکجوال مستقیم از سورس → مقصد (با محدودیت ۱۰ پست در روز)"""
+#     start_time = datetime.now().replace(hour=10, minute=0, second=0)
+#     end_time = datetime.now().replace(hour=22, minute=0, second=0)
+
+#     # فقط 100 پست آخر از DESTINATION می‌خونیم
+#     msgs = [m async for m in client.iter_messages(dest, reverse=True, limit=100)]
+
+#     # ۱۰ پست در روز → فاصله حدودا ۷۲ دقیقه
+#     interval = (end_time - start_time) / 10
+#     t = start_time
+
+#     for msg in msgs:
+#         if t > end_time:
+#             break
+#         if already_sent(msg.id):  # تکراری اسکیپ
+#             continue
+#         send_at = t + timedelta(seconds=random.randint(-120, 120))
+#         asyncio.create_task(send_later(client, msg, dest, footer, send_at))
+#         t += interval
+
+# async def send_later(client, msg, dest, footer, when: datetime):
+#     wait = (when - datetime.now()).total_seconds()
+#     if wait > 0:
+#         await asyncio.sleep(wait)
+#     await send_direct(client, "source", msg, dest, footer)
+
+# async def send_direct(client, src_key: str, msg: TMessage, dest_entity, footer: str):
+#     if already_sent(msg.id):
+#         return
+#     clean_text = sanitize_text(getattr(msg, "text", None), [src_key], footer)
+#     if isinstance(msg.media, MessageMediaPoll):
+#         return None
 #     if msg.media:
-#         caption = apply_footer(clean_text, is_caption=True)
-#         sent = await client.send_file(
-#             dest_entity,
-#             file=msg.media,               # تلاش برای ارسال بدون دانلود/آپلود
-#             caption=caption,
-#             buttons=msg.reply_markup,
-#             reply_to=reply_to,
-#             schedule=schedule_dt
-#         )
+#         await client.send_file(dest_entity, file=msg.media, caption=clean_text)
 #     else:
-#         text_to_send = apply_footer(clean_text, is_caption=False)
-#         if not text_to_send:
-#             text_to_send = FOOTER or ""
-#         if not text_to_send:
-#             return None
-#         sent = await client.send_message(
-#             dest_entity,
-#             text_to_send,
-#             buttons=msg.reply_markup,
-#             reply_to=reply_to,
-#             schedule=schedule_dt
-#         )
+#         await client.send_message(dest_entity, clean_text or footer)
+#     mark_sent(msg.id)
+#     await asyncio.sleep(0.5)
 
-#     await asyncio.sleep(SEND_DELAY_SEC)
-#     return sent
+# async def run_forwarder():
+#     client = make_client()
+#     await client.start()
 
-# # ==================== SCHEDULER CORE ====================
+#     src = await resolve_channel(client, cfg_get("SOURCE"))
+#     dest = await resolve_channel(client, cfg_get("DESTINATION"))
+#     footer = cfg_get("FOOTER", "")
+
+#     await schedule_from_source(client, src, dest, footer)
+
+#     print("[*] Scheduler running...")
+#     await client.run_until_disconnected()
+
+# # ==================== FORCE JOIN ====================
+# FORCE_CHANNELS = ["@netboxes"]
+
+# def join_keyboard():
+#     buttons = [[InlineKeyboardButton(text=f"Join {ch}", url=f"https://t.me/{ch.lstrip('@')}")] for ch in FORCE_CHANNELS]
+#     buttons.append([InlineKeyboardButton(text="✅ I Joined", callback_data="check_join")])
+#     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# async def check_user_joined(bot: Bot, user_id: int):
+#     not_joined = []
+#     for ch in FORCE_CHANNELS:
+#         try:
+#             member = await bot.get_chat_member(ch, user_id)
+#             if member.status in ("left", "kicked"):
+#                 not_joined.append(ch)
+#         except:
+#             not_joined.append(ch)
+#     return not_joined
+
+# # ==================== AIOGRAM BOT ====================
+# BOT_TOKEN = os.getenv("BOT_TOKEN", "8211978487:AAH-7pNq5negJySX1gD3ggwLFwnMCNV8O1o")
+# bot = Bot(BOT_TOKEN)
+# dp = Dispatcher()
+
+# # ادمین
+# ADMIN_PASSWORD = "MySecret123"
+# admin_sessions = set()
+
+# @dp.message(CommandStart())
+# async def start_cmd(message: Message):
+#     if is_blocked(message.from_user.id):
+#         await message.answer("⛔️ You are blocked from using this bot.")
+#         return
+#     if has_joined(message.from_user.id):
+#         await message.answer("👋 Welcome back! Send /run to start or configure again.")
+#     else:
+#         kb = join_keyboard()
+#         await message.answer("🚀 To continue using the bot you must join the following channels:", reply_markup=kb)
+
+# @dp.callback_query(F.data == "check_join")
+# async def check_join(callback: CallbackQuery):
+#     not_joined = await check_user_joined(bot, callback.from_user.id)
+#     if not_joined:
+#         block_user(callback.from_user.id, cfg_get("PHONE"))  # بلاک
+#         await callback.message.answer("❌ You are not a member of all required channels.\nPlease join and try again.", reply_markup=join_keyboard())
+#     else:
+#         mark_joined(callback.from_user.id)
+#         await callback.message.answer("✅ Thanks for joining! Now send your API_ID:")
+#         cfg_set("step", "api_id")
+
+# @dp.message(Command("run"))
+# async def run_cmd(message: Message):
+#     if is_blocked(message.from_user.id):
+#         await message.answer("⛔️ You are blocked from using this bot.")
+#         return
+#     await message.answer("🚀 Forwarder starting...")
+#     asyncio.create_task(run_forwarder())
+
+# @dp.message(Command("stop"))
+# async def stop_cmd(message: Message):
+#     await message.answer("⏹ Forwarder stopped. Restart bot if needed.")
+#     os._exit(0)
+
+# # پنل ادمین
+# @dp.message(Command("admin"))
+# async def admin_cmd(message: Message):
+#     parts = message.text.split(maxsplit=1)
+#     if len(parts) < 2:
+#         await message.answer("❌ Usage: /admin <password>")
+#         return
+#     if parts[1] == ADMIN_PASSWORD:
+#         admin_sessions.add(message.from_user.id)
+#         await message.answer("✅ Admin access granted.")
+#     else:
+#         await message.answer("❌ Wrong password.")
+
+# @dp.message(Command("blocked"))
+# async def blocked_cmd(message: Message):
+#     if message.from_user.id not in admin_sessions:
+#         return
+#     users = get_blocked()
+#     if not users:
+#         await message.answer("✅ No blocked users.")
+#         return
+#     text = "\n".join([f"ID: {u[0]}, Phone: {u[1]}" for u in users])
+#     await message.answer("🚫 Blocked Users:\n" + text)
+
+# @dp.message(Command("users"))
+# async def users_cmd(message: Message):
+#     if message.from_user.id not in admin_sessions:
+#         return
+#     users = get_users()
+#     if not users:
+#         await message.answer("ℹ️ No users yet.")
+#         return
+#     text = "\n".join([f"ID: {u[0]}" for u in users])
+#     await message.answer("👥 Active Users:\n" + text)
+
+# @dp.message(F.text)
+# async def collect(message: Message):
+#     if is_blocked(message.from_user.id):
+#         await message.answer("⛔️ You are blocked from using this bot.")
+#         return
+#     step = cfg_get("step")
+#     if step == "api_id":
+#         cfg_set("API_ID", message.text.strip()); cfg_set("step", "api_hash")
+#         await message.answer("✅ API_ID saved.\nNow send API_HASH:")
+#     elif step == "api_hash":
+#         cfg_set("API_HASH", message.text.strip()); cfg_set("step", "session_name")
+#         await message.answer("✅ API_HASH saved.\nNow send SESSION_NAME:")
+#     elif step == "session_name":
+#         cfg_set("SESSION_NAME", message.text.strip()); cfg_set("step", "footer")
+#         await message.answer("✅ SESSION_NAME saved.\nNow send FOOTER text:")
+#     elif step == "footer":
+#         cfg_set("FOOTER", message.text.strip()); cfg_set("step", "source")
+#         await message.answer("✅ FOOTER saved.\nNow send SOURCE channel:")
+#     elif step == "source":
+#         cfg_set("SOURCE", message.text.strip()); cfg_set("step", "dest")
+#         await message.answer("✅ SOURCE saved.\nNow send DESTINATION channel:")
+#     elif step == "dest":
+#         cfg_set("DESTINATION", message.text.strip()); cfg_set("step", "phone")
+#         await message.answer("✅ DESTINATION saved.\nNow send PHONE (with +countrycode):")
+#     elif step == "phone":
+#         cfg_set("PHONE", message.text.strip()); cfg_set("step", "done")
+#         await message.answer("✅ PHONE saved.\nAll config done! Now send /run to start.")
+
+# async def main():
+#     cfg_init()
+#     await dp.start_polling(bot)
+
+# if __name__ == "__main__":
+#     asyncio.run(main())
+
+
+
+
+
+
+
+
+# # -*- coding: utf-8 -*-
+# """
+# Telegram Mirror Bot - Aiogram 3.x + Telethon
+# --------------------------------------------
+# - Force Join
+# - بلاک/آنبلاک کاربرانی که جوین میدن و بعد لفت میکنن
+# - اسکجوال واقعی با DB (slot-based scheduler)
+# - لایو لیسنر برای پیام‌های جدید
+# - پنل ادمین با پسورد
+# """
+
+# import os
+# import re
+# import asyncio
+# import sqlite3
+# import pytz  # اضافه شده
+# from collections import defaultdict  # اضافه شده
+# from datetime import datetime, timedelta, date
+# from typing import Optional, List, Dict
+
+# from aiogram import Bot, Dispatcher, F
+# from aiogram.filters import CommandStart, Command
+# from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+
+# from telethon import TelegramClient, events
+# from telethon.tl.types import MessageMediaPoll, MessageMediaWebPage
+# from telethon.tl.functions.messages import ForwardMessagesRequest
+
+# # ==================== CONFIG DB ====================
+# DB_PATH = "bot_config.sqlite"
+# SCHEDULE_LIMIT = 50  # حداکثر پیام‌های اسکجوال‌شده مجاز در تلگرام
+# POSTS_PER_DAY = 10
+# START_LOCAL = 10
+# END_LOCAL = 22
+# IRAN_TZ = pytz.timezone("Asia/Tehran")
+
+# def cfg_connect():
+#     conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=60)
+#     conn.execute("PRAGMA journal_mode=WAL;")
+#     return conn
+
+# def cfg_init():
+#     with cfg_connect() as conn:
+#         conn.execute("""CREATE TABLE IF NOT EXISTS config(
+#                             key TEXT PRIMARY KEY,
+#                             val TEXT)""")
+#         conn.execute("""CREATE TABLE IF NOT EXISTS sent_posts(
+#                             src_key TEXT,
+#                             msg_id INTEGER,
+#                             PRIMARY KEY(src_key, msg_id))""")
+#         conn.execute("""CREATE TABLE IF NOT EXISTS joined_users(
+#                             user_id INTEGER PRIMARY KEY)""")
+#         conn.execute("""CREATE TABLE IF NOT EXISTS blocked_users(
+#                             user_id INTEGER PRIMARY KEY)""")
+#         conn.execute("""CREATE TABLE IF NOT EXISTS meta(
+#                             key TEXT PRIMARY KEY,
+#                             val TEXT)""")
+#         conn.execute("""CREATE TABLE IF NOT EXISTS mapping(
+#                             src_key TEXT,
+#                             src_id INTEGER,
+#                             dest_id INTEGER,
+#                             PRIMARY KEY(src_key, src_id))""")
+#         conn.execute("""CREATE TABLE IF NOT EXISTS scheduled(
+#                             src_msg_id INTEGER PRIMARY KEY,
+#                             schedule_ts INTEGER,
+#                             album_gid INTEGER)""")
+
+# def cfg_set(k, v):
+#     with cfg_connect() as conn:
+#         conn.execute("INSERT OR REPLACE INTO config VALUES(?,?)", (k, v))
+
+# def cfg_get(k, d=None):
+#     with cfg_connect() as conn:
+#         row = conn.execute("SELECT val FROM config WHERE key=?", (k,)).fetchone()
+#         return row[0] if row else d
+
+# def mark_joined(user_id: int):
+#     with cfg_connect() as conn:
+#         conn.execute("INSERT OR IGNORE INTO joined_users VALUES(?)", (user_id,))
+
+# def has_joined(user_id: int) -> bool:
+#     with cfg_connect() as conn:
+#         row = conn.execute("SELECT 1 FROM joined_users WHERE user_id=?", (user_id,)).fetchone()
+#         return bool(row)
+
+# def block_user(user_id: int):
+#     with cfg_connect() as conn:
+#         conn.execute("INSERT OR IGNORE INTO blocked_users VALUES(?)", (user_id,))
+
+# def unblock_user(user_id: int):
+#     with cfg_connect() as conn:
+#         conn.execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
+
+# def is_blocked(user_id: int) -> bool:
+#     with cfg_connect() as conn:
+#         row = conn.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,)).fetchone()
+#         return bool(row)
+
+# def get_blocked():
+#     with cfg_connect() as conn:
+#         return conn.execute("SELECT user_id FROM blocked_users").fetchall()
+
+# def get_users():
+#     with cfg_connect() as conn:
+#         return conn.execute("SELECT user_id FROM joined_users").fetchall()
+
+# def was_processed(src_key: str, msg_id: int) -> bool:
+#     with cfg_connect() as conn:
+#         row = conn.execute("SELECT 1 FROM sent_posts WHERE src_key=? AND msg_id=?", (src_key, msg_id)).fetchone()
+#         return bool(row)
+
+# def mark_processed(src_key: str, msg_id: int):
+#     with cfg_connect() as conn:
+#         conn.execute("INSERT OR IGNORE INTO sent_posts VALUES(?, ?)", (src_key, msg_id))
+
+# def save_mapping(src_key: str, src_id: int, dest_id: int):
+#     with cfg_connect() as conn:
+#         conn.execute("INSERT OR REPLACE INTO mapping VALUES(?,?,?)", (src_key, src_id, dest_id))
+
+# def scheduled_add(src_id: int, when_epoch: int, album_gid: int | None):
+#     with cfg_connect() as conn:
+#         conn.execute("INSERT OR REPLACE INTO scheduled(src_msg_id, schedule_ts, album_gid) VALUES(?,?,?)",
+#                      (src_id, when_epoch, album_gid))
+
+# # ==================== TELETHON CLIENT ====================
+# SESSIONS_DIR = "sessions"
+# os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+# def make_client():
+#     api_id = int(cfg_get("API_ID"))
+#     api_hash = cfg_get("API_HASH")
+#     session_name = cfg_get("SESSION_NAME", "mirror_session")
+#     return TelegramClient(os.path.join(SESSIONS_DIR, session_name), api_id, api_hash)
+
+# async def resolve_channel(client, raw: str):
+#     raw = raw.strip()
+#     try:
+#         if raw.startswith("http") or raw.startswith("@"):
+#             return await client.get_entity(raw)
+#         else:
+#             return await client.get_entity(int(raw))
+#     except Exception as e:
+#         print(f"❌ Failed to resolve {raw}: {e}")
+#         return None
+
+# # ==================== TEXT HELPERS ====================
+# CAPTION_MAX = 1024
+# TEXT_MAX = 4096
+
+# def sanitize_text(txt: Optional[str], sources: List[str], footer: str) -> str:
+#     if not txt:
+#         txt = ""
+#     cleaned = txt
+#     for u in sources:
+#         key = u.lower().lstrip("@")
+#         pat = re.compile(rf"(?:@{re.escape(key)}\b|https?://t\.me/{re.escape(key)}\b)", flags=re.IGNORECASE)
+#         cleaned = pat.sub("", cleaned)
+#     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+#     if footer and footer.lower() not in cleaned.lower():
+#         sep = "\n\n" if cleaned else ""
+#         cleaned = f"{cleaned}{sep}{footer}"
+#     limit = CAPTION_MAX if len(cleaned) <= CAPTION_MAX else TEXT_MAX
+#     return cleaned[:limit]
+
+# # ==================== SLOT SCHEDULER ====================
+# def _local_now() -> datetime:
+#     return datetime.now(IRAN_TZ)
+
+# def _build_slots_for_day(day: date) -> List[datetime]:
+#     """ساخت اسلات‌های زمانی برای یک روز (۱۰ صبح تا ۱۰ شب، ۱۰ پست)"""
+#     base_dt = IRAN_TZ.localize(datetime(day.year, day.month, day.day, START_LOCAL, 0, 0))
+#     hours_per_day = END_LOCAL - START_LOCAL
+#     interval_minutes = (hours_per_day * 60) // POSTS_PER_DAY
+#     return [base_dt + timedelta(minutes=i * interval_minutes) for i in range(POSTS_PER_DAY)]
+
 # def _next_schedule_dt() -> datetime:
 #     """
 #     اسلات بعدی را به صورت اتمیک از DB انتخاب می‌کند.
-#     - اسلات‌ها بین START_LOCAL..END_LOCAL بر اساس POSTS_PER_DAY ساخته می‌شوند.
-#     - اگر امروز از اسلات‌ها عبور کرده‌ایم، می‌پرد به بعدی یا فردا.
-#     - برای جلوگیری از Race بین بک‌فیل و لیسنر از BEGIN IMMEDIATE استفاده می‌شود.
+#     - اگر زمان‌ها خیلی دور هستن، ریست می‌کنه.
 #     """
 #     now = _local_now()
 #     today_key = now.date().strftime("%Y%m%d")
 
-#     with _connect_db() as conn:
+#     with cfg_connect() as conn:
 #         c = conn.cursor()
-#         c.execute("BEGIN IMMEDIATE")  # قفل برای اتمیک بودن
+#         c.execute("BEGIN IMMEDIATE")
 
-#         # خواندن متا در همین تراکنش
 #         c.execute("SELECT val FROM meta WHERE key='sched_day'")
 #         row_day = c.fetchone()
 #         cur_day = row_day[0] if row_day else ""
 
 #         c.execute("SELECT val FROM meta WHERE key='sched_idx'")
 #         row_idx = c.fetchone()
-#         cur_idx = int((row_idx[0] if row_idx else "0") or "0")
+#         cur_idx = int(row_idx[0] if row_idx else 0)
 
-#         # تعیین روز کاری
-#         if not cur_day:
-#             work_day = today_key
-#             cur_idx = 0
-#         elif cur_day < today_key:
+#         if cur_day:
+#             y, m, d = int(cur_day[:4]), int(cur_day[4:6]), int(cur_day[6:])
+#             work_date = date(y, m, d)
+#             if work_date > now.date() + timedelta(days=5):
+#                 cur_day = ""
+#                 cur_idx = 0
+
+#         if not cur_day or cur_day < today_key:
 #             work_day = today_key
 #             cur_idx = 0
 #         else:
 #             work_day = cur_day
 
-#         # تاریخ روز کاری
 #         if work_day == today_key:
 #             base_date = now.date()
 #         else:
@@ -374,13 +541,11 @@
 
 #         slots = _build_slots_for_day(base_date)
 
-#         # اگر روز کاری امروز است، اسلات‌های گذشته را رد کن
 #         if work_day == today_key:
 #             while cur_idx < len(slots) and slots[cur_idx] <= now:
 #                 cur_idx += 1
 
 #         if cur_idx >= len(slots):
-#             # فردا از اول
 #             next_date = base_date + timedelta(days=1)
 #             slots_next = _build_slots_for_day(next_date)
 #             sched_dt = slots_next[0]
@@ -395,34 +560,56 @@
 #         conn.commit()
 #         return sched_dt
 
-# # ==================== BACKFILL ====================
-# async def backfill_history(src_key: str, src_entity, dest_entity):
-#     """
-#     تاریخچه‌ی سورس را از قدیمی به جدید برنامه‌ریزی می‌کند.
-#     اگر سقف 100 تا پر شد، کار را همان‌جا متوقف می‌کند (processed علامت نمی‌زند)
-#     تا اجرای بعدی از همان‌جا ادامه دهد.
-#     """
-#     async for msg in client.iter_messages(src_entity, reverse=True):
-#         if was_processed(src_key, msg.id):
-#             continue
+# # ==================== SEND HELPERS ====================
+# async def count_scheduled(client, dest_entity) -> int:
+#     try:
+#         result = await client.get_scheduled_history(dest_entity, limit=0)
+#         return result.count
+#     except Exception as e:
+#         print(f"[❌] Error counting scheduled messages: {e}")
+#         return 0
 
-#         scheduled_now = await count_scheduled(dest_entity)
-#         if scheduled_now >= SCHEDULE_LIMIT:
-#             print(f"[BF][{src_key}] STOP: destination has {scheduled_now} scheduled (limit={SCHEDULE_LIMIT}).")
-#             return
+# async def _forward_single_message_scheduled(client, src_entity, msg, dest_entity, schedule_dt: datetime):
+#     """ارسال پیام تکی با زمان‌بندی"""
+#     schedule_ts = int(schedule_dt.astimezone(pytz.utc).timestamp())
+#     try:
+#         res = await client(ForwardMessagesRequest(
+#             from_peer=src_entity,
+#             id=[msg.id],
+#             to_peer=dest_entity,
+#             drop_author=True,
+#             schedule_date=schedule_ts
+#         ))
+#         await asyncio.sleep(1)
+#         return res
+#     except Exception as e:
+#         print(f"[❌] Error forwarding single message {msg.id}: {e}")
+#         return None
 
-#         sched = _next_schedule_dt()
-#         try:
-#             sent = await _send_with_reply(src_key, msg, dest_entity, sched)
-#         except Exception as e:
-#             print(f"[BF][{src_key}] ERROR sending {msg.id}: {e}")
-#             continue
-#         if sent:
-#             save_mapping(src_key, msg.id, sent.id)
-#             mark_processed(src_key, msg.id)
-#             print(f"[BF][{src_key}] {msg.id} -> {sent.id} at {sched.isoformat()}")
+# async def _forward_album_scheduled(client, src_entity, messages, dest_entity, schedule_dt: datetime):
+#     """ارسال آلبوم با زمان‌بندی"""
+#     messages = sorted(messages, key=lambda m: m.id)
+#     ids = [m.id for m in messages]
+#     schedule_ts = int(schedule_dt.astimezone(pytz.utc).timestamp())
+#     try:
+#         res = await client(ForwardMessagesRequest(
+#             from_peer=src_entity,
+#             id=ids,
+#             to_peer=dest_entity,
+#             drop_author=True,
+#             schedule_date=schedule_ts
+#         ))
+#         await asyncio.sleep(1)
+#         return res
+#     except Exception as e:
+#         print(f"[❌] Error forwarding album: {e}")
+#         return None
 
 # # ==================== LIVE LISTENER ====================
+# SCHEDULE_LIMIT = 50
+# _live_album_buffer = defaultdict(list)
+# _live_album_tasks = {}
+
 # async def handle_new_message(event: events.NewMessage.Event, dest_entity, source_id_to_key: Dict[int, str]):
 #     msg = event.message
 #     src_key = source_id_to_key.get(event.chat_id)
@@ -432,74 +619,254 @@
 #     if was_processed(src_key, msg.id):
 #         return
 
-#     scheduled_now = await count_scheduled(dest_entity)
+#     scheduled_now = await count_scheduled(event.client, dest_entity)
 #     if scheduled_now >= SCHEDULE_LIMIT:
-#         print(f"[LIVE][{src_key}] SKIP: scheduled={scheduled_now} (limit={SCHEDULE_LIMIT}). Will be picked up next run.")
+#         print(f"[LIVE][{src_key}] SKIP: scheduled={scheduled_now} (limit={SCHEDULE_LIMIT}).")
 #         return
 
-#     sched = _next_schedule_dt()
-#     try:
-#         sent = await _send_with_reply(src_key, msg, dest_entity, sched)
-#     except Exception as e:
-#         print(f"[LIVE][{src_key}] ERROR sending {msg.id}: {e}")
+#     if msg.grouped_id:
+#         _live_album_buffer[msg.grouped_id].append(msg)
+#         if msg.grouped_id not in _live_album_tasks:
+#             _live_album_tasks[msg.grouped_id] = asyncio.create_task(
+#                 _flush_live_album(msg.grouped_id, event.client, dest_entity, src_key)
+#             )
 #         return
 
-#     if sent:
-#         save_mapping(src_key, msg.id, sent.id)
+#     schedule_dt = _next_schedule_dt()
+#     res = await _forward_single_message_scheduled(event.client, event.chat, msg, dest_entity, schedule_dt)
+#     if res and res.updates:
+#         dest_id = res.updates[0].id
+#         save_mapping(src_key, msg.id, dest_id)
 #         mark_processed(src_key, msg.id)
-#         print(f"[LIVE][{src_key}] {msg.id} -> {sent.id} at {sched.isoformat()}")
+#         scheduled_add(msg.id, int(schedule_dt.timestamp()), None)
+#         print(f"[LIVE][{src_key}] {msg.id} -> {dest_id} scheduled at {schedule_dt.isoformat()}")
 
-# # ==================== MAIN ====================
-# async def main():
-#     init_db()
+# async def _flush_live_album(grouped_id, client, dest_entity, src_key):
+#     """بعد از کمی صبر، آلبوم جمع‌شده را یک‌جا زمان‌بندی می‌کند."""
+#     await asyncio.sleep(2.0)
+#     msgs = _live_album_buffer.pop(grouped_id, [])
+#     if not msgs:
+#         return
+#     not_done = [m for m in msgs if not was_processed(src_key, m.id)]
+#     if not_done:
+#         schedule_dt = _next_schedule_dt()
+#         res = await _forward_album_scheduled(client, not_done[0].peer_id, not_done, dest_entity, schedule_dt)
+#         if res and res.updates:
+#             dest_ids = [update.id for update in res.updates]
+#             for m, d_id in zip(not_done, dest_ids):
+#                 save_mapping(src_key, m.id, d_id)
+#                 mark_processed(src_key, m.id)
+#                 scheduled_add(m.id, int(schedule_dt.timestamp()), grouped_id)
+#             print(f"[LIVE][{src_key}] Album {grouped_id} -> {dest_ids} scheduled at {schedule_dt.isoformat()}")
+
+# # ==================== FORCE JOIN + AIOGRAM BOT ====================
+# BOT_TOKEN = os.getenv("BOT_TOKEN", "8211978487:AAH-7pNq5negJySX1gD3ggwLFwnMCNV8O1o")
+# bot = Bot(BOT_TOKEN)
+# dp = Dispatcher()
+
+# ADMIN_PASSWORD = "MySecret123"
+# admin_sessions = set()
+
+# FORCE_CHANNELS = ["@netboxes"]
+
+# def join_keyboard():
+#     buttons = [[InlineKeyboardButton(text=f"Join {ch}", url=f"https://t.me/{ch.lstrip('@')}")] for ch in FORCE_CHANNELS]
+#     buttons.append([InlineKeyboardButton(text="✅ I Joined", callback_data="check_join")])
+#     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# async def check_user_joined(bot: Bot, user_id: int):
+#     not_joined = []
+#     for ch in FORCE_CHANNELS:
+#         try:
+#             member = await bot.get_chat_member(ch, user_id)
+#             if member.status in ("left", "kicked"):
+#                 not_joined.append(ch)
+#         except:
+#             not_joined.append(ch)
+#     return not_joined
+
+# @dp.message(CommandStart())
+# async def start_cmd(message: Message):
+#     if is_blocked(message.from_user.id):
+#         await message.answer("⛔️ You are blocked from using this bot.")
+#         return
+#     if has_joined(message.from_user.id):
+#         await message.answer("👋 Welcome back! Send /run to start.")
+#     else:
+#         await message.answer("🚀 Join required channels:", reply_markup=join_keyboard())
+
+# @dp.callback_query(F.data == "check_join")
+# async def check_join(callback: CallbackQuery):
+#     not_joined = await check_user_joined(bot, callback.from_user.id)
+#     if not_joined:
+#         block_user(callback.from_user.id)
+#         await callback.message.answer("❌ Not joined.", reply_markup=join_keyboard())
+#     else:
+#         mark_joined(callback.from_user.id)
+#         await callback.message.answer("✅ Joined! Now send API_ID:")
+#         cfg_set("step", "api_id")
+
+# @dp.message(Command("run"))
+# async def run_cmd(message: Message):
+#     if is_blocked(message.from_user.id):
+#         await message.answer("⛔️ You are blocked from using this bot.")
+#         return
+#     asyncio.create_task(run_forwarder())
+#     await message.answer("🚀 Forwarder started with live listener.")
+
+# @dp.message(Command("reset_sched"))
+# async def reset_sched_cmd(message: Message):
+#     if message.from_user.id not in admin_sessions:
+#         return
+#     with cfg_connect() as conn:
+#         conn.execute("DELETE FROM meta WHERE key IN ('sched_day', 'sched_idx')")
+#         conn.execute("DELETE FROM scheduled")
+#     await message.answer("✅ Schedule settings have been reset. Now run /run again.")
+
+# @dp.message(Command("admin"))
+# async def admin_cmd(message: Message):
+#     parts = message.text.split(maxsplit=1)
+#     if len(parts) < 2:
+#         await message.answer("❌ Usage: /admin <password>")
+#         return
+#     if parts[1] == ADMIN_PASSWORD:
+#         admin_sessions.add(message.from_user.id)
+#         await message.answer("✅ Admin access granted.")
+#     else:
+#         await message.answer("❌ Wrong password.")
+
+# @dp.message(Command("blocked"))
+# async def blocked_cmd(message: Message):
+#     if message.from_user.id not in admin_sessions:
+#         return
+#     users = get_blocked()
+#     if not users:
+#         await message.answer("✅ No blocked users.")
+#         return
+#     text = "\n".join([f"ID: {u[0]}" for u in users])
+#     await message.answer("🚫 Blocked Users:\n" + text)
+
+# @dp.message(Command("unblock"))
+# async def unblock_cmd(message: Message):
+#     if message.from_user.id not in admin_sessions:
+#         return
+#     parts = message.text.split(maxsplit=1)
+#     if len(parts) < 2:
+#         await message.answer("❌ Usage: /unblock <user_id>")
+#         return
+#     try:
+#         uid = int(parts[1])
+#         unblock_user(uid)
+#         await message.answer(f"✅ User {uid} has been unblocked.")
+#     except Exception as e:
+#         await message.answer(f"❌ Error: {e}")
+
+# @dp.message(Command("users"))
+# async def users_cmd(message: Message):
+#     if message.from_user.id not in admin_sessions:
+#         return
+#     users = get_users()
+#     if not users:
+#         await message.answer("ℹ️ No users yet.")
+#         return
+#     text = "\n".join([f"ID: {u[0]}" for u in users])
+#     await message.answer("👥 Active Users:\n" + text)
+
+# @dp.message(F.text)
+# async def collect(message: Message):
+#     if is_blocked(message.from_user.id):
+#         await message.answer("⛔️ You are blocked from using this bot.")
+#         return
+#     step = cfg_get("step")
+#     if step == "api_id":
+#         cfg_set("API_ID", message.text.strip()); cfg_set("step", "api_hash")
+#         await message.answer("✅ API_ID saved.\nNow send API_HASH:")
+#     elif step == "api_hash":
+#         cfg_set("API_HASH", message.text.strip()); cfg_set("step", "session_name")
+#         await message.answer("✅ API_HASH saved.\nNow send SESSION_NAME:")
+#     elif step == "session_name":
+#         cfg_set("SESSION_NAME", message.text.strip()); cfg_set("step", "footer")
+#         await message.answer("✅ SESSION_NAME saved.\nNow send FOOTER text:")
+#     elif step == "footer":
+#         cfg_set("FOOTER", message.text.strip()); cfg_set("step", "source")
+#         await message.answer("✅ FOOTER saved.\nNow send SOURCE channel:")
+#     elif step == "source":
+#         cfg_set("SOURCE", message.text.strip()); cfg_set("step", "dest")
+#         await message.answer("✅ SOURCE saved.\nNow send DESTINATION channel:")
+#     elif step == "dest":
+#         cfg_set("DESTINATION", message.text.strip()); cfg_set("step", "done")
+#         await message.answer("✅ DESTINATION saved.\nAll config done! Now send /run to start.")
+
+# async def backfill_messages(client, src, dest):
+#     """گرفتن 100 پست آخر و اسکجوال آنها"""
+#     msgs = [m async for m in client.iter_messages(src, limit=100, reverse=False)]
+#     msgs.reverse()
+#     album_bucket = defaultdict(list)
+
+#     src_key = cfg_get("SOURCE").lstrip("@")
+
+#     for msg in msgs:
+#         if was_processed(src_key, msg.id) or isinstance(msg.media, MessageMediaPoll):
+#             continue
+
+#         if msg.grouped_id:
+#             album_bucket[msg.grouped_id].append(msg)
+#             continue
+
+#         schedule_dt = _next_schedule_dt()
+#         res = await _forward_single_message_scheduled(client, src, msg, dest, schedule_dt)
+#         if res and res.updates:
+#             dest_id = res.updates[0].id
+#             save_mapping(src_key, msg.id, dest_id)
+#             mark_processed(src_key, msg.id)
+#             scheduled_add(msg.id, int(schedule_dt.timestamp()), None)
+#             print(f"[BACKFILL] {msg.id} -> {dest_id} scheduled at {schedule_dt.isoformat()}")
+
+#     for gid, items in album_bucket.items():
+#         if not items:
+#             continue
+#         schedule_dt = _next_schedule_dt()
+#         res = await _forward_album_scheduled(client, src, items, dest, schedule_dt)
+#         if res and res.updates:
+#             dest_ids = [update.id for update in res.updates]
+#             for m, d_id in zip(items, dest_ids):
+#                 save_mapping(src_key, m.id, d_id)
+#                 mark_processed(src_key, m.id)
+#                 scheduled_add(m.id, int(schedule_dt.timestamp()), gid)
+#             print(f"[BACKFILL] Album {gid} -> {dest_ids} scheduled at {schedule_dt.isoformat()}")
+
+# async def run_forwarder():
+#     client = make_client()
 #     await client.start()
 
-#     # مقصد: یوزرنیم/آیدی/لینک جوین
-#     try:
-#         dest_entity = await client.get_entity(DEST)
-#     except Exception as e:
-#         print(f("[!] Could not resolve DESTINATION {DEST!r}: {e}"))
-#         return
+#     src = await resolve_channel(client, cfg_get("SOURCE"))
+#     dest = await resolve_channel(client, cfg_get("DESTINATION"))
 
-#     # رزولوشن سورس‌ها با نگاشت id → key
-#     source_entities: List[Tuple[str, object]] = []
-#     source_id_to_key: Dict[int, str] = {}
+#     src_key = cfg_get("SOURCE").lstrip("@")
+#     source_id_to_key = {src.id: src_key}
 
-#     for s in SOURCES_RAW:
-#         try:
-#             ent = await client.get_entity(s)
-#         except Exception as e:
-#             print(f"[!] Could not resolve source {s!r}: {e}")
-#             continue
-#         key = _source_key(s if s.startswith("@") else (getattr(ent, "username", None) or str(ent.id)))
-#         source_entities.append((key, ent))
-#         source_id_to_key[getattr(ent, "id")] = key
+#     await backfill_messages(client, src, dest)
 
-#     if not source_entities:
-#         print("[!] No valid sources resolved. Exiting.")
-#         return
+#     @client.on(events.NewMessage(chats=src))
+#     async def handler(event):
+#         await handle_new_message(event, dest, source_id_to_key)
 
-#     # بک‌فیل همه‌ی سورس‌ها (تا اولین برخورد با سقف)
-#     for key, ent in source_entities:
-#         print(f"[*] Backfilling {key} ...")
-#         await backfill_history(key, ent, dest_entity)
-#         scheduled_now = await count_scheduled(dest_entity)
-#         if scheduled_now >= SCHEDULE_LIMIT:
-#             print(f"[*] STOP backfill (scheduled={scheduled_now}/{SCHEDULE_LIMIT}). Resume on next run.")
-#             break
-
-#     print("[*] Listening...")
-#     @client.on(events.NewMessage(chats=[ent for _, ent in source_entities]))
-#     async def listener(event):
-#         await handle_new_message(event, dest_entity, source_id_to_key)
-
+#     print("[*] Live listener running...")
 #     await client.run_until_disconnected()
 
+# async def main():
+#     cfg_init()
+#     await dp.start_polling(bot)
+
 # if __name__ == "__main__":
-#     try:
-#         asyncio.run(main())
-#     except KeyboardInterrupt:
-#         print("[!] Stopped")
+#     asyncio.run(main())
+
+
+
+
+
+
+
 
 
 
@@ -507,159 +874,319 @@
 
 
 # -*- coding: utf-8 -*-
-"""
-Mirror & Scheduler for Telegram channels (نسخه Bot Token)
--------------------------------------------------
-ENV نمونه (api.env):
-API_ID=123456
-API_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
-DESTINATION=@your_channel_or_chat
-SOURCES=@src1;@src2
-FOOTER=💡 @aiwithamir
-SEND_DELAY_SEC=0.5
-TIMEZONE=Asia/Tehran
-POSTS_PER_DAY=10
-START_LOCAL=10:00
-END_LOCAL=22:00
-"""
+import os, re, asyncio
+import pytz
+from datetime import datetime, timedelta, date
 
-import os, re, sys, asyncio, sqlite3
-from datetime import datetime, time, timedelta, date
-from typing import Optional, Dict, List, Tuple
+from aiogram import Bot, Dispatcher, types  # ← اینجا types اضافه شد
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import CommandStart , Command
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from telethon.errors import FloodWaitError
+from telethon.errors import PhoneNumberInvalidError, FloodWaitError
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from dotenv import load_dotenv, find_dotenv
-from telethon import TelegramClient, events
-from telethon.tl.types import Message, MessageMediaPoll
-from telethon.tl import functions
-from zoneinfo import ZoneInfo
+from telethon import TelegramClient
+from telethon.errors import SessionPasswordNeededError
+from telethon.tl.types import Message as TMessage
 
-# ==================== ENV ====================
-def _load_env():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.join(script_dir, "api.env")
-    if os.path.exists(path):
-        load_dotenv(path, override=True)
+
+# ===== Configuration =====
+BOT_TOKEN = "8211978487:AAH-7pNq5negJySX1gD3ggwLFwnMCNV8O1o"
+FORCE_CHANNELS = ["@netboxes"]
+SESSIONS_DIR = "sessions"
+os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
+
+IRAN_TZ = pytz.timezone("Asia/Tehran")
+POSTS_PER_DAY = 10
+START_HOUR = 10
+END_HOUR = 20
+
+ADMIN_ID = 2108801377
+blocked_users = set()
+
+from aiogram.filters import Filter
+
+class IsAdmin(Filter):
+    def __init__(self, admin_id: int):
+        self.admin_id = admin_id
+    async def __call__(self, message):
+        return message.from_user.id == self.admin_id
+
+    
+class Flow(StatesGroup):
+    footer = State()
+    source = State()
+    dest = State()
+    phone = State()
+    api_id = State()
+    api_hash = State()
+    session = State()
+    code = State()
+    twofa = State()
+
+joined_users = set()
+
+def join_kbd():
+    kb = InlineKeyboardBuilder()
+    for ch in FORCE_CHANNELS:
+        kb.button(text=f"Join {ch}", url=f"https://t.me/{ch.lstrip('@')}")
+    kb.button(text="✅ I Joined", callback_data="check_join")
+    return kb.as_markup()
+
+async def check_joined(user_id):
+    missing = []
+    for ch in FORCE_CHANNELS:
+        try:
+            m = await bot.get_chat_member(chat_id=ch, user_id=user_id)
+            if m.status in ("left", "kicked"):
+                missing.append(ch)
+        except:
+            missing.append(ch)
+    return missing
+
+def sanitize_caption(text: str, footer: str) -> str:
+    # حذف لینک‌های t.me و @username فقط
+    clean = re.sub(r"(https?://t\.me/\S+|@\w+)", "", text or "").strip()
+    return f"{clean}\n\n**{footer}**" if footer else clean
+
+
+def generate_full_schedule(start_day: date, total: int = 100):
+    slots = []
+    posts_per_day = POSTS_PER_DAY  # مثلاً 10 تا در روز
+    hours_range = END_HOUR - START_HOUR
+    seconds_between = (hours_range * 3600) // posts_per_day
+
+    days_needed = (total + posts_per_day - 1) // posts_per_day
+
+    for d in range(days_needed):
+        day = start_day + timedelta(days=d)
+        base_time = IRAN_TZ.localize(datetime(day.year, day.month, day.day, START_HOUR, 0))
+        for i in range(posts_per_day):
+            if len(slots) >= total:
+                break
+            slots.append(base_time + timedelta(seconds=i * seconds_between))
+    return slots
+
+@dp.message(CommandStart())
+async def cmd_start(m: types.Message, state: FSMContext):
+    if m.from_user.id in joined_users:
+        await m.answer("<b>Already joined. Send any message to begin data input.</b>")
     else:
-        load_dotenv(find_dotenv(filename="api.env", usecwd=True), override=True)
+        await m.answer("Please join the required channel(s):", reply_markup=join_kbd())
 
-print("[*] Loading env...")
-_load_env()
+@dp.callback_query(lambda c: c.data == "check_join")
+async def on_check_join(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    missing = await check_joined(c.from_user.id)
+    if missing:
+        await c.message.answer("<b>Join required to proceed.</b>", reply_markup=join_kbd())
+        return
+    joined_users.add(c.from_user.id)
+    await c.message.answer("<b>Send <code>Footer</code> text (or /skip):</b>")
+    await state.set_state(Flow.footer)
 
-def _must_env(key: str) -> str:
-    v = os.getenv(key)
-    if not v:
-        print(f"[!] Missing environment variable: {key}")
-        sys.exit(1)
-    return v
+@dp.message(Flow.footer)
+async def on_footer(m: types.Message, state: FSMContext):
+    txt = "" if m.text.strip() == "/skip" else m.text.strip()
+    await state.update_data(footer=txt)
+    await m.answer("<b>Send <code>SOURCE</code> channels (comma-separated, up to 3):</b>")
+    await state.set_state(Flow.source)
 
-try:
-    API_ID = int(_must_env("API_ID"))
-except ValueError:
-    print("[!] API_ID باید عدد باشد.")
-    sys.exit(1)
+@dp.message(Flow.source)
+async def on_source(m: types.Message, state: FSMContext):
+    await state.update_data(source=m.text.strip())
+    await m.answer("<b>Send <code>DESTINATION</code> channel (username or ID):</b>")
+    await state.set_state(Flow.dest)
 
-API_HASH  = _must_env("API_HASH")
-BOT_TOKEN = _must_env("BOT_TOKEN")
-DEST      = _must_env("DESTINATION")
+@dp.message(Flow.dest)
+async def on_dest(m: types.Message, state: FSMContext):
+    await state.update_data(dest=m.text.strip())
+    await m.answer("<b>Send your <code>Phone Number</code> (e.g. +123...):</b>")
+    await state.set_state(Flow.phone)
 
-FOOTER = os.getenv("FOOTER", "💡 @aiwithamir").strip()
-CAPTION_MAX, TEXT_MAX = 1024, 4096
+@dp.message(Flow.phone)
+async def on_phone(m: types.Message, state: FSMContext):
+    await state.update_data(phone=m.text.strip())
+    await m.answer("<b>Send your <code>API_ID</code>:</b>")
+    await state.set_state(Flow.api_id)
 
-raw_sources = os.getenv("SOURCES", "") or os.getenv("SOURCE", "")
-SOURCES_RAW: List[str] = [p.strip() for p in re.split(r"[;,\n]", raw_sources) if p.strip()]
-if not SOURCES_RAW:
-    print("[!] No source channels in SOURCE/SOURCES")
-    sys.exit(1)
-print(f"[*] Sources: {SOURCES_RAW}")
+@dp.message(Flow.api_id)
+async def on_api_id(m: types.Message, state: FSMContext):
+    await state.update_data(api_id=int(m.text.strip()))
+    await m.answer("<b>Send your <code>API_HASH</code>:</b>")
+    await state.set_state(Flow.api_hash)
 
-SEND_DELAY_SEC = float(os.getenv("SEND_DELAY_SEC", "0.5"))
-SCHEDULE_LIMIT = 100
+@dp.message(Flow.api_hash)
+async def on_api_hash(m: types.Message, state: FSMContext):
+    await state.update_data(api_hash=m.text.strip())
+    await m.answer("<b>Enter <code>SESSION_NAME</code>:</b>")
+    await state.set_state(Flow.session)
 
-TIMEZONE   = os.getenv("TIMEZONE", "Asia/Tehran").strip()
-TZ         = ZoneInfo(TIMEZONE)
-
-def _parse_hhmm(s: str) -> time:
-    hh, mm = s.strip().split(":")
-    return time(int(hh), int(mm))
-
-POSTS_PER_DAY = int(os.getenv("POSTS_PER_DAY", "10"))
-START_LOCAL   = _parse_hhmm(os.getenv("START_LOCAL", "10:00"))
-END_LOCAL     = _parse_hhmm(os.getenv("END_LOCAL", "22:00"))
-
-# ==================== CLIENT ====================
-client = TelegramClient("bot_session", API_ID, API_HASH)
-
-# ==================== DB ====================
-DB_PATH = "mirror_state.sqlite"
-
-def _connect_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    return conn
-
-def _ensure_schema():
-    with _connect_db() as conn:
-        c = conn.cursor()
-        c.execute("""CREATE TABLE IF NOT EXISTS processed(
-                        src_chat TEXT, src_msg_id INTEGER,
-                        PRIMARY KEY(src_chat, src_msg_id))""")
-        c.execute("""CREATE TABLE IF NOT EXISTS mapping(
-                        src_chat TEXT, src_msg_id INTEGER,
-                        dst_msg_id INTEGER,
-                        PRIMARY KEY(src_chat, src_msg_id))""")
-        c.execute("""CREATE TABLE IF NOT EXISTS meta(
-                        key TEXT PRIMARY KEY, val TEXT)""")
-
-def init_db():
-    _ensure_schema()
-
-def was_processed(chat_key, mid):
-    with _connect_db() as conn:
-        return conn.execute("SELECT 1 FROM processed WHERE src_chat=? AND src_msg_id=?", (chat_key, mid)).fetchone() is not None
-
-def mark_processed(chat_key, mid):
-    with _connect_db() as conn:
-        conn.execute("INSERT OR IGNORE INTO processed VALUES(?,?)", (chat_key, mid))
-
-def save_mapping(chat_key, src_id, dst_id):
-    with _connect_db() as conn:
-        conn.execute("INSERT OR REPLACE INTO mapping VALUES(?,?,?)", (chat_key, src_id, dst_id))
-
-def get_mapping(chat_key, src_id):
-    with _connect_db() as conn:
-        row = conn.execute("SELECT dst_msg_id FROM mapping WHERE src_chat=? AND src_msg_id=?", (chat_key, src_id)).fetchone()
-        return row[0] if row else None
-
-def meta_get(k, d=None):
-    with _connect_db() as conn:
-        row = conn.execute("SELECT val FROM meta WHERE key=?", (k,)).fetchone()
-        return row[0] if row else d
-
-def meta_set(k, v):
-    with _connect_db() as conn:
-        conn.execute("INSERT OR REPLACE INTO meta VALUES(?,?)", (k, v))
-
-# ==================== MAIN ====================
-async def main():
-    init_db()
-    await client.start(bot_token=BOT_TOKEN)
-
+@dp.message(Flow.session)
+async def on_session(m: types.Message, state: FSMContext):
+    await state.update_data(session=m.text.strip())
+    data = await state.get_data()
+    client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
+    await m.answer("Sending authentication code...")
     try:
-        dest_entity = await client.get_entity(DEST)
+        await client.connect()
+        res = await client.send_code_request(data["phone"])
+        await state.update_data(code_hash=res.phone_code_hash)
+
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Edit Phone Number", callback_data="edit_phone")
+        await m.answer("Enter the Telegram code you received:", reply_markup=builder.as_markup())
+        await state.set_state(Flow.code)
+
+    except PhoneNumberInvalidError:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Edit Phone Number", callback_data="edit_phone")
+        await m.answer("Invalid phone number.", reply_markup=builder.as_markup())
+
     except Exception as e:
-        print(f"[!] Could not resolve DESTINATION {DEST!r}: {e}")
+        await m.answer(f"Error sending code: {e}")
+        
+@dp.callback_query(lambda c: c.data == "edit_phone")
+async def edit_phone_callback(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+
+    # حفظ داده‌های قبلی و فقط پاک‌کردن موارد مربوط به auth
+    data = await state.get_data()
+    preserved = {k: v for k, v in data.items() if k not in ["phone", "code", "code_hash", "twofa"]}
+    await state.clear()
+    await state.update_data(**preserved)
+
+    await state.set_state(Flow.phone)
+    await c.message.answer("Please enter your phone number again:")
+
+
+@dp.message(Flow.code)
+async def on_code(m: types.Message, state: FSMContext):
+    await state.update_data(code=m.text.strip())
+    await m.answer("<b>If 2FA is enabled, send password or /skip:</b>")
+    await state.set_state(Flow.twofa)
+
+@dp.message(lambda m: m.text == "/skip", Flow.twofa)
+async def skip_twofa(m: types.Message, state: FSMContext):
+    await state.update_data(twofa=None)
+    await state.set_state(None)
+    await m.answer("<b>All data collected! Send /run to schedule (no instant send).</b>")
+
+@dp.message(Flow.twofa)
+async def on_twofa(m: types.Message, state: FSMContext):
+    await state.update_data(twofa=m.text.strip())
+    await state.set_state(None)
+    await m.answer("<b>Perfect! Send /run when you're ready to schedule.</b>")
+
+@dp.message(Command("run"))
+async def on_run(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    missing = [k for k in ["source","dest","phone","api_id","api_hash","session","code","code_hash"] if not data.get(k)]
+    if missing:
+        await m.answer(f"<b>Missing: {', '.join(missing)}</b>. Please restart with /start.")
         return
 
-    print("[*] Listening...")
-    @client.on(events.NewMessage(chats=SOURCES_RAW))
-    async def listener(event):
-        print(f"[LIVE] {event.message.id} from {event.chat_id}")
+    await state.clear()
+
+    client = TelegramClient(os.path.join(SESSIONS_DIR,data["session"]),data["api_id"],data["api_hash"])
+    await client.connect()
+    if not await client.is_user_authorized():
+        try:
+            await client.sign_in(phone=data["phone"], code=data["code"], phone_code_hash=data["code_hash"])
+        except SessionPasswordNeededError:
+            pw = data.get("twofa")
+            if not pw:
+                await m.answer("<b>2FA required—restart with password.</b>")
+                return
+            await client.sign_in(password=pw)
+
+    footer = data.get("footer","")
+    sources = [s.strip() for s in data["source"].split(",")][:3]
+    per_chan = 100 // len(sources) if sources else 100
+    srcs = [await client.get_entity(s) for s in sources]
+    dst = await client.get_entity(data["dest"])
+    tomorrow = datetime.now(IRAN_TZ).date() + timedelta(days=1)
+    slots = generate_full_schedule(tomorrow, 100)
+
+
+    idx = 0
+    try:
+        for src in srcs:
+            async for msg in client.iter_messages(src, limit=per_chan, reverse=True):
+                if idx >= 100:
+                    break  # Stop if limit reached
+
+                if isinstance(msg, TMessage) and msg.text:
+                    txt = sanitize_caption(msg.text, footer)
+                    try:
+                        await client.send_message(dst, txt, schedule=slots[idx])
+                        idx += 1
+                    except FloodWaitError as e:
+                        await m.answer(f"<b>FloodWait⏳: Please wait {e.seconds} seconds ...</b>")
+                        await asyncio.sleep(e.seconds)
+                        continue
+                    except IndexError:
+                        await m.answer("<b>⚠️ Not enough schedule slots available.</b>")
+                        break
+
+                    await asyncio.sleep(0.3)
+            if idx >= 100:
+                break
+    except Exception as e:
+        await m.answer(f"<b>Error while sending messages: {str(e)}</b>")
+
+    if idx >= 100:
+        await m.answer("<b>✅ Successfully scheduled 100 posts.</b>")
+    else:
+        await m.answer(f"<b>⏳ Only {idx} posts scheduled. Limit not reached.</b>")
 
     await client.run_until_disconnected()
 
+
+
+@dp.message(Command("admin"), IsAdmin(admin_id=ADMIN_ID))
+async def cmd_admin(m: types.Message):
+    print("Admin panel command received from user:", m.from_user.id)
+    text = "<b>Admin Panel:</b>\n" \
+           "/users — show active users\n" \
+           "/blocked — show blocked users\n" \
+           "/unblock <code>user_id</code> — unblock user"
+    await m.answer(text)
+
+@dp.message(Command("users"), IsAdmin(admin_id=ADMIN_ID))
+async def cmd_users(m: types.Message):
+    users = list(joined_users)
+    if not users:
+        await m.answer("No active users yet.")
+    else:
+        text = "Active Users:\n" + "\n".join(f"- {uid}" for uid in users)
+        await m.answer(text)
+
+@dp.message(Command("blocked"), IsAdmin(admin_id=ADMIN_ID))
+async def cmd_blocked(m: types.Message):
+    text = "Blocked Users:\n" + "\n".join(f"- {uid}" for uid in blocked_users) if blocked_users else "No blocked users."
+    await m.answer(text)
+
+@dp.message(Command("unblock"), IsAdmin(admin_id=ADMIN_ID))
+async def cmd_unblock(m: types.Message):
+    parts = m.text.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        return await m.answer("Usage: /unblock <user_id>")
+    uid = int(parts[1])
+    blocked_users.discard(uid)
+    await m.answer(f"User {uid} has been unblocked.")
+
+
+async def main():
+    await dp.start_polling(bot, allowed_updates=["message","callback_query"])
+
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("[!] Stopped")
+    asyncio.run(main())
