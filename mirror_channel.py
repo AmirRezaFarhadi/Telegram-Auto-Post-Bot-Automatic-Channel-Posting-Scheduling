@@ -1176,7 +1176,8 @@ async def on_run(m: types.Message, state: FSMContext):
     else:
         await m.answer(f"<b>⏳ Only {idx} posts scheduled. Limit not reached.</b>")
 
-    await client.run_until_disconnected()
+        await client.disconnect()
+        os._exit(0)
 
 @router.message(Command("admin"), IsAdmin(admin_id=ADMIN_ID))
 async def cmd_admin(m: types.Message):
