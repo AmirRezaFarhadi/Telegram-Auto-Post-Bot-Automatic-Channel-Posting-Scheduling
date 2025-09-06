@@ -1030,6 +1030,14 @@ async def on_dest(m: types.Message, state: FSMContext):
     print("✅ Destination received:", dest)   # لاگ
     await m.answer("<b>Send your <code>Phone Number</code> (e.g. +123...):</b>")
     await state.set_state(Flow.phone)
+    
+@router.message(Flow.phone)
+async def on_phone(m: types.Message, state: FSMContext):
+    phone = m.text.strip()
+    await state.update_data(phone=phone)
+    print("✅ Phone received:", phone)   # لاگ
+    await m.answer("<b>Send your <code>API_ID</code>:</b>")
+    await state.set_state(Flow.api_id)
 
 @router.message(Flow.api_id)
 async def on_api_id(m: types.Message, state: FSMContext):
