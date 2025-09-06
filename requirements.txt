@@ -1,4 +1,3 @@
-aiogram[sqlite]==3.22.1
-telethon==1.41.0
-pytz
+aiogram==3.22.0
 python-dotenv
+telethon
