@@ -1,9 +1,9 @@
 name: Telegram Forwarder Bot
 
 on:
-  workflow_dispatch:    # اجرای دستی
+  workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"   # هر 5 دقیقه یک بار اجرا میشه
+    - cron: "*/5 * * * *"
 
 jobs:
   run-bot:
