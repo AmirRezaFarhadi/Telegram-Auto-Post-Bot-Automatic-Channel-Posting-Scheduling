@@ -1,9 +1,13 @@
 name: Telegram Forwarder Bot
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "0 */6 * * *"   # هر 6 ساعت یک بار
+  workflow_dispatch:         # دستی هم میشه اجرا کرد
+
+concurrency:
+  group: bot-run
+  cancel-in-progress: true   # هر بار که Job جدید شروع بشه، قبلی خودکار کنسل میشه
 
 jobs:
   run-bot:
@@ -18,20 +22,10 @@ jobs:
           python-version: "3.10"
 
       - name: Install dependencies
-        run: |
-          ls -la
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Run bot
         env:
-          API_ID: ${{ secrets.API_ID }}
-          API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          SOURCES: ${{ secrets.SOURCES }}
-          DESTINATION: ${{ secrets.DESTINATION }}
-          FOOTER: ${{ secrets.FOOTER }}
-          TIMEZONE: ${{ secrets.TIMEZONE }}
-          POSTS_PER_DAY: ${{ secrets.POSTS_PER_DAY }}
-          START_LOCAL: ${{ secrets.START_LOCAL }}
-          END_LOCAL: ${{ secrets.END_LOCAL }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
         run: python mirror_channel.py
