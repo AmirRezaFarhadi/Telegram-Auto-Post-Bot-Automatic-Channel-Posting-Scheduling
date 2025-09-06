@@ -915,6 +915,9 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 
 dp = Dispatcher(storage=MemoryStorage())
 
+router = Router()
+dp.include_router(router)
+
 IRAN_TZ = pytz.timezone("Asia/Tehran")
 POSTS_PER_DAY = 10
 START_HOUR = 10
