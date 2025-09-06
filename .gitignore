@@ -1,1 +1,40 @@
-api.env 
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.sqlite3
+
+# ===== Virtualenv =====
+.venv/
+env/
+venv/
+ENV/
+.venv*/
+venv*/
+
+# ===== IDE & Editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===== OS Files =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Project Specific =====
+# فایل env شامل توکن‌ها و api_id/hash
+*.env
+api.env
+
+# فایل‌های session تلگرام (خیلی حساس)
+*.session
+sessions/
+*.session-journal
+
+# ===== Render & Deploy =====
+# اگر فایل خروجی یا پوشه خاص برای دیپلوی داری
+*.log
