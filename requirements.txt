@@ -1,3 +1,4 @@
 aiogram==3.22.0
 telethon==1.41.0
 pytz
+python-dotenv
