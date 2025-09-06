@@ -896,6 +896,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
+from aiogram.fsm.storage.sqlite import SQLiteStorage
+
 
 from telethon import TelegramClient
 from telethon.errors import (
@@ -912,7 +914,9 @@ SESSIONS_DIR = "sessions"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher(storage=MemoryStorage())
+
+storage = SQLiteStorage("states.sqlite3")
+dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
 
@@ -1000,30 +1004,32 @@ async def on_check_join(c: types.CallbackQuery, state: FSMContext):
     await c.message.answer("<b>Send <code>Footer</code> text (or /skip):</b>")
     await state.set_state(Flow.footer)
 
+
 @router.message(Flow.footer)
 async def on_footer(m: types.Message, state: FSMContext):
     txt = "" if m.text.strip() == "/skip" else m.text.strip()
     await state.update_data(footer=txt)
+    print("✅ Footer received:", txt)   # لاگ
     await m.answer("<b>Send <code>SOURCE</code> channels (comma-separated, up to 3):</b>")
     await state.set_state(Flow.source)
 
+
 @router.message(Flow.source)
 async def on_source(m: types.Message, state: FSMContext):
-    await state.update_data(source=m.text.strip())
+    src = m.text.strip()
+    await state.update_data(source=src)
+    print("✅ Source received:", src)   # لاگ
     await m.answer("<b>Send <code>DESTINATION</code> channel (username or ID):</b>")
     await state.set_state(Flow.dest)
 
+
 @router.message(Flow.dest)
 async def on_dest(m: types.Message, state: FSMContext):
-    await state.update_data(dest=m.text.strip())
+    dest = m.text.strip()
+    await state.update_data(dest=dest)
+    print("✅ Destination received:", dest)   # لاگ
     await m.answer("<b>Send your <code>Phone Number</code> (e.g. +123...):</b>")
     await state.set_state(Flow.phone)
-
-@router.message(Flow.phone)
-async def on_phone(m: types.Message, state: FSMContext):
-    await state.update_data(phone=m.text.strip())
-    await m.answer("<b>Send your <code>API_ID</code>:</b>")
-    await state.set_state(Flow.api_id)
 
 @router.message(Flow.api_id)
 async def on_api_id(m: types.Message, state: FSMContext):
