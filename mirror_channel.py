@@ -896,8 +896,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardButton
-from aiogram.fsm.storage.sqlite import SQLiteStorage
-
 
 from telethon import TelegramClient
 from telethon.errors import (
@@ -915,10 +913,7 @@ os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
-storage = SQLiteStorage("states.sqlite3")
-dp = Dispatcher(storage=storage)
-router = Router()
-dp.include_router(router)
+dp = Dispatcher(storage=MemoryStorage())
 
 IRAN_TZ = pytz.timezone("Asia/Tehran")
 POSTS_PER_DAY = 10
@@ -1030,7 +1025,7 @@ async def on_dest(m: types.Message, state: FSMContext):
     print("✅ Destination received:", dest)   # لاگ
     await m.answer("<b>Send your <code>Phone Number</code> (e.g. +123...):</b>")
     await state.set_state(Flow.phone)
-    
+
 @router.message(Flow.phone)
 async def on_phone(m: types.Message, state: FSMContext):
     phone = m.text.strip()
