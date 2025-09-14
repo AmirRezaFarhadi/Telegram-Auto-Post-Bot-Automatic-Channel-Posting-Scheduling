@@ -1098,13 +1098,14 @@ async def on_code(m: types.Message, state: FSMContext):
     phone = data["phone"]
 
     try:
+        # مرحله ۱: سعی کن با کد لاگین کنی
         await client.sign_in(phone=phone, code=m.text.strip(), phone_code_hash=code_hash)
         await state.update_data(code=m.text.strip(), _client=client)
         await m.answer("<b>If 2FA is enabled, send password or /skip:</b>")
         await state.set_state(Flow.twofa)
 
     except SessionPasswordNeededError:
-        # 🟢 اگر 2FA فعال بود، پسورد از کاربر بگیر
+        # مرحله ۲: اگر 2FA روشن بود، از کاربر پسورد بگیر
         await state.update_data(code=m.text.strip(), _client=client)
         await m.answer("🔑 2FA is enabled. Please send your password:")
         await state.set_state(Flow.twofa)
@@ -1117,6 +1118,16 @@ async def on_code(m: types.Message, state: FSMContext):
     except Exception as e:
         await m.answer(f"❌ Login failed: {e}")
 
+@router.message(Flow.twofa)
+async def on_twofa(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    client: TelegramClient = data.get("_client")
+    try:
+        await client.sign_in(password=m.text.strip())
+        await state.update_data(twofa=m.text.strip())
+        await m.answer("<b>✅ Login successful! Now send /run to schedule.</b>")
+    except Exception as e:
+        await m.answer(f"❌ 2FA Login failed: {e}")
 
 
 @router.message(lambda m: m.text == "/skip", Flow.twofa)
@@ -1124,12 +1135,6 @@ async def skip_twofa(m: types.Message, state: FSMContext):
     await state.update_data(twofa=None)
     await state.set_state(None)
     await m.answer("<b>All data collected! Send /run to schedule (no instant send).</b>")
-
-@router.message(Flow.twofa)
-async def on_twofa(m: types.Message, state: FSMContext):
-    await state.update_data(twofa=m.text.strip())
-    await state.set_state(None)
-    await m.answer("<b>Perfect! Send /run when you're ready to schedule.</b>")
 
 @router.message(Command("run"))
 async def on_run(m: types.Message, state: FSMContext):
