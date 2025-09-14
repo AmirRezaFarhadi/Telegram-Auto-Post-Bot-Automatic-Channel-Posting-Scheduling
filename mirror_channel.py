@@ -1063,15 +1063,13 @@ async def on_session(m: types.Message, state: FSMContext):
     #     await state.update_data(code_hash=res.phone_code_hash)
 
     session_name = os.path.join(SESSIONS_DIR, m.text.strip())
-client = TelegramClient(session_name, data["api_id"], data["api_hash"])
-await m.answer("Sending authentication code...")
-try:
-    await client.connect()
-    res = await client.send_code_request(data["phone"])
-    await state.update_data(session=m.text.strip(), code_hash=res.phone_code_hash)
-    await client.disconnect()
-
-
+    client = TelegramClient(session_name, data["api_id"], data["api_hash"])
+    await m.answer("Sending authentication code...")
+    try:
+        await client.connect()
+        res = await client.send_code_request(data["phone"])
+        await state.update_data(session=m.text.strip(), code_hash=res.phone_code_hash)
+        await client.disconnect()
 
         builder = InlineKeyboardBuilder()
         builder.button(text="Edit Phone Number", callback_data="edit_phone")
@@ -1083,7 +1081,7 @@ try:
         await m.answer("Invalid phone number.", reply_markup=builder.as_markup())
     except Exception as e:
         await m.answer(f"Error sending code: {e}")
-
+        
 @router.callback_query(lambda c: c.data == "edit_phone")
 async def edit_phone_callback(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
