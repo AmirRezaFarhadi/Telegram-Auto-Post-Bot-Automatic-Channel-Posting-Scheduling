@@ -976,6 +976,12 @@ def generate_full_schedule(start_day: date, total: int = 100):
             slots.append(base_time + timedelta(seconds=i * seconds_between))
     return slots
 
+@router.message(CommandStart())
+async def cmd_start(m: types.Message, state: FSMContext):
+    if m.from_user.id in joined_users:
+        await m.answer("<b>Already joined. Send any message to begin data input.</b>")
+    else:
+        await m.answer("Please join the required channel(s):", reply_markup=join_kbd())
         
 @router.callback_query(lambda c: c.data == "edit_phone")
 async def edit_phone_callback(c: types.CallbackQuery, state: FSMContext):
