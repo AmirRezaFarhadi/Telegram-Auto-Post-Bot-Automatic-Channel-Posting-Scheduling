@@ -1097,20 +1097,26 @@ async def on_code(m: types.Message, state: FSMContext):
     code_hash = data.get("code_hash")
     phone = data["phone"]
 
-    try:
-        await client.sign_in(phone=phone, code=m.text.strip(), phone_code_hash=code_hash)
-        await state.update_data(code=m.text.strip(), _client=client)  # ذخیره کلاینت لاگین‌شده
-        await m.answer("<b>If 2FA is enabled, send password or /skip:</b>")
-        await state.set_state(Flow.twofa)
-    except SessionPasswordNeededError:
-        await m.answer("🔑 2FA enabled. Please send your password:")
-        await state.set_state(Flow.twofa)
-    except PhoneCodeExpiredError:
-        builder = InlineKeyboardBuilder()
-        builder.button(text="Edit Phone Number", callback_data="edit_phone")
-        await m.answer("<b>❌ Your code has expired. Please re-enter your phone number to get a new code.</b>", reply_markup=builder.as_markup())
-    except Exception as e:
-        await m.answer(f"❌ Login failed: {e}")
+try:
+    await client.sign_in(phone=phone, code=m.text.strip(), phone_code_hash=code_hash)
+    await state.update_data(code=m.text.strip(), _client=client)
+    await m.answer("<b>If 2FA is enabled, send password or /skip:</b>")
+    await state.set_state(Flow.twofa)
+
+except SessionPasswordNeededError:
+    # 🟢 اگر 2FA فعال بود، پسورد از کاربر بگیر
+    await state.update_data(code=m.text.strip(), _client=client)
+    await m.answer("🔑 2FA is enabled. Please send your password:")
+    await state.set_state(Flow.twofa)
+
+except PhoneCodeExpiredError:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Edit Phone Number", callback_data="edit_phone")
+    await m.answer("<b>❌ Your code has expired. Please re-enter your phone number to get a new code.</b>", reply_markup=builder.as_markup())
+
+except Exception as e:
+    await m.answer(f"❌ Login failed: {e}")
+
 
 
 @router.message(lambda m: m.text == "/skip", Flow.twofa)
