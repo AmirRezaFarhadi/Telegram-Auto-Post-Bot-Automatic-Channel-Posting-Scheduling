@@ -1099,7 +1099,7 @@ async def on_code(m: types.Message, state: FSMContext):
 
     try:
         await client.sign_in(phone=phone, code=m.text.strip(), phone_code_hash=code_hash)
-        await state.update_data(code=m.text.strip())
+        await state.update_data(code=m.text.strip(), _client=client)  # ذخیره کلاینت لاگین‌شده
         await m.answer("<b>If 2FA is enabled, send password or /skip:</b>")
         await state.set_state(Flow.twofa)
     except SessionPasswordNeededError:
@@ -1133,9 +1133,11 @@ async def on_run(m: types.Message, state: FSMContext):
         await m.answer(f"<b>Missing: {', '.join(missing)}</b>. Please restart with /start.")
         return
 
-    await state.clear()
-    client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
-    await client.connect()
+    client: TelegramClient = data.get("_client")  # همون کلاینتی که قبلاً لاگین شده
+    if not client:
+        await m.answer("❌ Session not found. Please restart with /start.")
+        return
+
     if not await client.is_user_authorized():
         try:
             await client.sign_in(phone=data["phone"], code=data["code"], phone_code_hash=data["code_hash"])
