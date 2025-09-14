@@ -1093,19 +1093,19 @@ async def edit_phone_callback(c: types.CallbackQuery, state: FSMContext):
 @router.message(Flow.code)
 async def on_code(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    client: TelegramClient = data.get("_client")   # 🟢 کلاینت از state
+    client: TelegramClient = data.get("_client")
     code_hash = data.get("code_hash")
     phone = data["phone"]
 
     try:
-        # مرحله ۱: سعی کن با کد لاگین کنی
+        # مرحله اول: تلاش برای لاگین با کد
         await client.sign_in(phone=phone, code=m.text.strip(), phone_code_hash=code_hash)
         await state.update_data(code=m.text.strip(), _client=client)
-        await m.answer("<b>If 2FA is enabled, send password or /skip:</b>")
-        await state.set_state(Flow.twofa)
+        await m.answer("<b>✅ Login successful! Now send /run to schedule.</b>")
+        await state.set_state(None)
 
     except SessionPasswordNeededError:
-        # مرحله ۲: اگر 2FA روشن بود، از کاربر پسورد بگیر
+        # اگر پسورد لازم بود، بریم مرحله‌ی بعد
         await state.update_data(code=m.text.strip(), _client=client)
         await m.answer("🔑 2FA is enabled. Please send your password:")
         await state.set_state(Flow.twofa)
@@ -1113,22 +1113,24 @@ async def on_code(m: types.Message, state: FSMContext):
     except PhoneCodeExpiredError:
         builder = InlineKeyboardBuilder()
         builder.button(text="Edit Phone Number", callback_data="edit_phone")
-        await m.answer("<b>❌ Your code has expired. Please re-enter your phone number to get a new code.</b>", reply_markup=builder.as_markup())
+        await m.answer("<b>❌ Your code expired. Please re-enter your phone number.</b>", reply_markup=builder.as_markup())
 
     except Exception as e:
         await m.answer(f"❌ Login failed: {e}")
+
 
 @router.message(Flow.twofa)
 async def on_twofa(m: types.Message, state: FSMContext):
     data = await state.get_data()
     client: TelegramClient = data.get("_client")
     try:
+        # مرحله دوم: فقط پسورد
         await client.sign_in(password=m.text.strip())
         await state.update_data(twofa=m.text.strip())
-        await m.answer("<b>✅ Login successful! Now send /run to schedule.</b>")
+        await m.answer("<b>✅ Login successful with 2FA! Now send /run to schedule.</b>")
+        await state.set_state(None)
     except Exception as e:
         await m.answer(f"❌ 2FA Login failed: {e}")
-
 
 @router.message(lambda m: m.text == "/skip", Flow.twofa)
 async def skip_twofa(m: types.Message, state: FSMContext):
