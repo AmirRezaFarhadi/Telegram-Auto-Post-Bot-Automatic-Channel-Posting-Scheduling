@@ -871,6 +871,111 @@
 
 
 
+# -*- coding: utf-8 -*-
+import os, re, asyncio
+import pytz
+from datetime import datetime, timedelta, date
+
+from dotenv import load_dotenv
+
+env_path = os.path.join(os.path.dirname(__file__), "api.env")
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+from aiogram import Bot, Dispatcher, Router, types
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
+
+from telethon import TelegramClient
+from telethon.errors import (
+    FloodWaitError,
+    PhoneNumberInvalidError,
+    SessionPasswordNeededError,
+    PhoneCodeExpiredError,
+)
+from telethon.tl.types import Message as TMessage
+
+FORCE_CHANNELS = ["@netboxes"]
+SESSIONS_DIR = "sessions"
+os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
+router = Router()
+dp.include_router(router)
+
+IRAN_TZ = pytz.timezone("Asia/Tehran")
+POSTS_PER_DAY = 10
+START_HOUR = 10
+END_HOUR = 20
+
+blocked_users = set()
+joined_users = set()
+
+from aiogram.filters import Filter
+class IsAdmin(Filter):
+    def __init__(self, admin_id: int):
+        self.admin_id = admin_id
+    async def __call__(self, message: types.Message) -> bool:
+        return message.from_user.id == self.admin_id
+
+class Flow(StatesGroup):
+    footer = State()
+    source = State()
+    dest = State()
+    phone = State()
+    api_id = State()
+    api_hash = State()
+    session = State()
+    code = State()
+    twofa = State()
+
+def join_kbd():
+    kb = InlineKeyboardBuilder()
+    for ch in FORCE_CHANNELS:
+        kb.button(text=f"Join {ch}", url=f"https://t.me/{ch.lstrip('@')}")
+    kb.button(text="✅ I Joined", callback_data="check_join")
+    return kb.as_markup()
+
+async def check_joined(user_id: int):
+    missing = []
+    for ch in FORCE_CHANNELS:
+        try:
+            m = await bot.get_chat_member(chat_id=ch, user_id=user_id)
+            if m.status in ("left", "kicked"):
+                missing.append(ch)
+        except:
+            missing.append(ch)
+    return missing
+
+def sanitize_caption(text: str, footer: str) -> str:
+    clean = re.sub(r"(https?://t\.me/\S+|@\w+)", "", text or "").strip()
+    return f"{clean}\n\n**{footer}**" if footer else clean
+
+def generate_full_schedule(start_day: date, total: int = 100):
+    slots = []
+    posts_per_day = POSTS_PER_DAY
+    hours_range = END_HOUR - START_HOUR
+    seconds_between = (hours_range * 3600) // posts_per_day
+    days_needed = (total + posts_per_day - 1) // posts_per_day
+    for d in range(days_needed):
+        day = start_day + timedelta(days=d)
+        base_time = IRAN_TZ.localize(datetime(day.year, day.month, day.day, START_HOUR, 0))
+        for i in range(posts_per_day):
+            if len(slots) >= total:
+                break
+            slots.append(base_time + timedelta(seconds=i * seconds_between))
+    return slots
+
         
 @router.callback_query(lambda c: c.data == "edit_phone")
 async def edit_phone_callback(c: types.CallbackQuery, state: FSMContext):
