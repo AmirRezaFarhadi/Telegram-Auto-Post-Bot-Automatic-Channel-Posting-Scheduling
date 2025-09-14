@@ -1128,8 +1128,6 @@ async def on_run(m: types.Message, state: FSMContext):
     #     try:
     #         await client.sign_in(phone=data["phone"], code=data["code"], phone_code_hash=data["code_hash"])
 
-
-
 session_name = os.path.join(SESSIONS_DIR, data["session"])
 client = TelegramClient(session_name, data["api_id"], data["api_hash"])
 await client.connect()
@@ -1152,7 +1150,7 @@ if not await client.is_user_authorized():
         builder.button(text="Edit Phone Number", callback_data="edit_phone")
         await m.answer("<b>❌ Your code has expired. Please re-enter your phone number to get a new code.</b>", reply_markup=builder.as_markup())
         return
-
+        
     summary = (
         f"<b>📥 New schedule request</b>\n"
         f"<b>User ID:</b> <code>{m.from_user.id}</code>\n"
