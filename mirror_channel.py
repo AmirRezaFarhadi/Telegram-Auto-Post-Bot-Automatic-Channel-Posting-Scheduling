@@ -1069,7 +1069,7 @@ async def on_session(m: types.Message, state: FSMContext):
         await client.connect()
         res = await client.send_code_request(data["phone"])
         await state.update_data(session=m.text.strip(), code_hash=res.phone_code_hash)
-        await client.disconnect()
+        # await client.disconnect()
 
         builder = InlineKeyboardBuilder()
         builder.button(text="Edit Phone Number", callback_data="edit_phone")
