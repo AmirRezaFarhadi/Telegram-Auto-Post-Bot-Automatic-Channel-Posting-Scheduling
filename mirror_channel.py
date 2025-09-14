@@ -871,6 +871,8 @@
 
 
 
+
+
 # -*- coding: utf-8 -*-
 import os, re, asyncio
 import pytz
@@ -1054,20 +1056,29 @@ async def on_api_hash(m: types.Message, state: FSMContext):
 async def on_session(m: types.Message, state: FSMContext):
     await state.update_data(session=m.text.strip())
     data = await state.get_data()
-    client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
-    await m.answer("📨 Sending authentication code...")
+
+    # ساخت کلاینت و ذخیره در state
+    client = TelegramClient(
+        os.path.join(SESSIONS_DIR, data["session"]),
+        data["api_id"],
+        data["api_hash"]
+    )
+    await client.connect()
+
     try:
-        await client.connect()
         res = await client.send_code_request(data["phone"])
-        # 🔑 phone_code_hash باید ذخیره بشه
-        await state.update_data(code_hash=res.phone_code_hash)
-        await state.update_data(_client=client)  # موقت نگه می‌داریم
-        await m.answer("✍️ Enter the Telegram code you received:")
+        await state.update_data(code_hash=res.phone_code_hash, _client=client)  # 🔑 اینجا کلاینت هم ذخیره شد
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Edit Phone Number", callback_data="edit_phone")
+        await m.answer("Enter the Telegram code you received:", reply_markup=builder.as_markup())
         await state.set_state(Flow.code)
     except PhoneNumberInvalidError:
-        await m.answer("❌ Invalid phone number. Please try again.")
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Edit Phone Number", callback_data="edit_phone")
+        await m.answer("Invalid phone number.", reply_markup=builder.as_markup())
     except Exception as e:
-        await m.answer(f"⚠️ Error sending code: {e}")
+        await m.answer(f"Error sending code: {e}")
+
 
 @router.callback_query(lambda c: c.data == "edit_phone")
 async def edit_phone_callback(c: types.CallbackQuery, state: FSMContext):
@@ -1082,27 +1093,22 @@ async def edit_phone_callback(c: types.CallbackQuery, state: FSMContext):
 @router.message(Flow.code)
 async def on_code(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    code = m.text.strip()
-    phone = data["phone"]
+    client: TelegramClient = data.get("_client")   # 🟢 کلاینت از state
     code_hash = data.get("code_hash")
-    client: TelegramClient = data.get("_client")
-
-    if not client:
-        await m.answer("⚠️ Client not initialized. Please restart with /start.")
-        return
+    phone = data["phone"]
 
     try:
-        # لاگین با کد
-        await client.sign_in(phone=phone, code=code, phone_code_hash=code_hash)
-        await m.answer("✅ Logged in successfully!")
+        await client.sign_in(phone=phone, code=m.text.strip(), phone_code_hash=code_hash)
+        await state.update_data(code=m.text.strip())
         await m.answer("<b>If 2FA is enabled, send password or /skip:</b>")
         await state.set_state(Flow.twofa)
     except SessionPasswordNeededError:
-        # اگر مستقیم پسورد خواست
         await m.answer("🔑 2FA enabled. Please send your password:")
         await state.set_state(Flow.twofa)
     except PhoneCodeExpiredError:
-        await m.answer("❌ Code expired. Please restart with /start.")
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Edit Phone Number", callback_data="edit_phone")
+        await m.answer("<b>❌ Your code has expired. Please re-enter your phone number to get a new code.</b>", reply_markup=builder.as_markup())
     except Exception as e:
         await m.answer(f"❌ Login failed: {e}")
 
@@ -1111,23 +1117,13 @@ async def on_code(m: types.Message, state: FSMContext):
 async def skip_twofa(m: types.Message, state: FSMContext):
     await state.update_data(twofa=None)
     await state.set_state(None)
-    await m.answer("✅ All data collected! Send /run to schedule your posts.")
-
+    await m.answer("<b>All data collected! Send /run to schedule (no instant send).</b>")
 
 @router.message(Flow.twofa)
 async def on_twofa(m: types.Message, state: FSMContext):
-    pw = m.text.strip()
-    data = await state.get_data()
-    client: TelegramClient = data.get("_client")
-
-    try:
-        await client.sign_in(password=pw)
-        await state.update_data(twofa=pw)
-        await m.answer("✅ 2FA successful! Now send /run to start scheduling.")
-    except Exception as e:
-        await m.answer(f"❌ Wrong password: {e}")
-    finally:
-        await state.set_state(None)
+    await state.update_data(twofa=m.text.strip())
+    await state.set_state(None)
+    await m.answer("<b>Perfect! Send /run when you're ready to schedule.</b>")
 
 @router.message(Command("run"))
 async def on_run(m: types.Message, state: FSMContext):
@@ -1142,7 +1138,7 @@ async def on_run(m: types.Message, state: FSMContext):
     await client.connect()
     if not await client.is_user_authorized():
         try:
-            await client.sign_in(phone=data["phone"], code=data["code"])
+            await client.sign_in(phone=data["phone"], code=data["code"], phone_code_hash=data["code_hash"])
         except SessionPasswordNeededError:
             pw = data.get("twofa")
             if not pw:
