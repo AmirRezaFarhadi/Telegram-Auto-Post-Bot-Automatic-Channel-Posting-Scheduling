@@ -877,15 +877,12 @@ from datetime import datetime, timedelta, date
 
 from dotenv import load_dotenv
 
-# اول سعی کن فایل api.env رو از پوشه جاری لود کن
 env_path = os.path.join(os.path.dirname(__file__), "api.env")
 if os.path.exists(env_path):
     load_dotenv(env_path)
 
-# حالا مقدار رو از سیستم env بخون (اگر توی Render یا GitHub باشه از اونجا میاد)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-
 
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.enums import ParseMode
@@ -906,15 +903,12 @@ from telethon.errors import (
 )
 from telethon.tl.types import Message as TMessage
 
-# ==== Configuration ====
 FORCE_CHANNELS = ["@netboxes"]
 SESSIONS_DIR = "sessions"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-
 dp = Dispatcher(storage=MemoryStorage())
-
 router = Router()
 dp.include_router(router)
 
@@ -982,8 +976,6 @@ def generate_full_schedule(start_day: date, total: int = 100):
             slots.append(base_time + timedelta(seconds=i * seconds_between))
     return slots
 
-# --- Handlers ---
-
 @router.message(CommandStart())
 async def cmd_start(m: types.Message, state: FSMContext):
     if m.from_user.id in joined_users:
@@ -1002,30 +994,24 @@ async def on_check_join(c: types.CallbackQuery, state: FSMContext):
     await c.message.answer("<b>Send <code>Footer</code> text (or /skip):</b>")
     await state.set_state(Flow.footer)
 
-
 @router.message(Flow.footer)
 async def on_footer(m: types.Message, state: FSMContext):
     txt = "" if m.text.strip() == "/skip" else m.text.strip()
     await state.update_data(footer=txt)
-    print("✅ Footer received:", txt)   # لاگ
     await m.answer("<b>Send <code>SOURCE</code> channels (comma-separated, up to 3):</b>")
     await state.set_state(Flow.source)
-
 
 @router.message(Flow.source)
 async def on_source(m: types.Message, state: FSMContext):
     src = m.text.strip()
     await state.update_data(source=src)
-    print("✅ Source received:", src)   # لاگ
     await m.answer("<b>Send <code>DESTINATION</code> channel (username or ID):</b>")
     await state.set_state(Flow.dest)
-
 
 @router.message(Flow.dest)
 async def on_dest(m: types.Message, state: FSMContext):
     dest = m.text.strip()
     await state.update_data(dest=dest)
-    print("✅ Destination received:", dest)   # لاگ
     await m.answer("<b>Send your <code>Phone Number</code> (e.g. +123...):</b>")
     await state.set_state(Flow.phone)
 
@@ -1033,7 +1019,6 @@ async def on_dest(m: types.Message, state: FSMContext):
 async def on_phone(m: types.Message, state: FSMContext):
     phone = m.text.strip()
     await state.update_data(phone=phone)
-    print("✅ Phone received:", phone)   # لاگ
     await m.answer("<b>Send your <code>API_ID</code>:</b>")
     await state.set_state(Flow.api_id)
 
@@ -1053,24 +1038,13 @@ async def on_api_hash(m: types.Message, state: FSMContext):
 async def on_session(m: types.Message, state: FSMContext):
     await state.update_data(session=m.text.strip())
     data = await state.get_data()
-
-    # important
-    # client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
-    # await m.answer("Sending authentication code...")
-    # try:
-    #     await client.connect()
-    #     res = await client.send_code_request(data["phone"])
-    #     await state.update_data(code_hash=res.phone_code_hash)
-
     session_name = os.path.join(SESSIONS_DIR, m.text.strip())
     client = TelegramClient(session_name, data["api_id"], data["api_hash"])
     await m.answer("Sending authentication code...")
     try:
         await client.connect()
         res = await client.send_code_request(data["phone"])
-        await state.update_data(session=m.text.strip(), code_hash=res.phone_code_hash)
-        # await client.disconnect()
-
+        await state.update_data(code_hash=res.phone_code_hash)
         builder = InlineKeyboardBuilder()
         builder.button(text="Edit Phone Number", callback_data="edit_phone")
         await m.answer("Enter the Telegram code you received:", reply_markup=builder.as_markup())
@@ -1081,6 +1055,7 @@ async def on_session(m: types.Message, state: FSMContext):
         await m.answer("Invalid phone number.", reply_markup=builder.as_markup())
     except Exception as e:
         await m.answer(f"Error sending code: {e}")
+
         
 @router.callback_query(lambda c: c.data == "edit_phone")
 async def edit_phone_callback(c: types.CallbackQuery, state: FSMContext):
