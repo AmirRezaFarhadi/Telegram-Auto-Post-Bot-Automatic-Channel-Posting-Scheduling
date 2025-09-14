@@ -1092,11 +1092,13 @@ async def on_code(m: types.Message, state: FSMContext):
         return
 
     try:
+        # لاگین با کد
         await client.sign_in(phone=phone, code=code, phone_code_hash=code_hash)
-        await m.answer("✅ Logged in successfully! Session saved.")
-        await state.set_state(None)
-        await state.update_data(client=None)  # پاکسازی
+        await m.answer("✅ Logged in successfully!")
+        await m.answer("<b>If 2FA is enabled, send password or /skip:</b>")
+        await state.set_state(Flow.twofa)
     except SessionPasswordNeededError:
+        # اگر مستقیم پسورد خواست
         await m.answer("🔑 2FA enabled. Please send your password:")
         await state.set_state(Flow.twofa)
     except PhoneCodeExpiredError:
@@ -1104,17 +1106,28 @@ async def on_code(m: types.Message, state: FSMContext):
     except Exception as e:
         await m.answer(f"❌ Login failed: {e}")
 
+
 @router.message(lambda m: m.text == "/skip", Flow.twofa)
 async def skip_twofa(m: types.Message, state: FSMContext):
     await state.update_data(twofa=None)
     await state.set_state(None)
-    await m.answer("<b>All data collected! Send /run to schedule (no instant send).</b>")
+    await m.answer("✅ All data collected! Send /run to schedule your posts.")
+
 
 @router.message(Flow.twofa)
 async def on_twofa(m: types.Message, state: FSMContext):
-    await state.update_data(twofa=m.text.strip())
-    await state.set_state(None)
-    await m.answer("<b>Perfect! Send /run when you're ready to schedule.</b>")
+    pw = m.text.strip()
+    data = await state.get_data()
+    client: TelegramClient = data.get("_client")
+
+    try:
+        await client.sign_in(password=pw)
+        await state.update_data(twofa=pw)
+        await m.answer("✅ 2FA successful! Now send /run to start scheduling.")
+    except Exception as e:
+        await m.answer(f"❌ Wrong password: {e}")
+    finally:
+        await state.set_state(None)
 
 @router.message(Command("run"))
 async def on_run(m: types.Message, state: FSMContext):
