@@ -1054,7 +1054,7 @@ async def on_session(m: types.Message, state: FSMContext):
     await state.update_data(session=m.text.strip())
     data = await state.get_data()
 
-    important
+    # important
     # client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
     # await m.answer("Sending authentication code...")
     # try:
@@ -1123,7 +1123,7 @@ async def on_run(m: types.Message, state: FSMContext):
     await state.clear()
 
 
-important
+# important
     # client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
     # await client.connect()
     # if not await client.is_user_authorized():
