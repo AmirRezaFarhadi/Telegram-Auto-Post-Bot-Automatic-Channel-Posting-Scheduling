@@ -982,7 +982,18 @@ async def cmd_start(m: types.Message, state: FSMContext):
         await m.answer("<b>Already joined. Send any message to begin data input.</b>")
     else:
         await m.answer("Please join the required channel(s):", reply_markup=join_kbd())
-        
+
+@router.callback_query(lambda c: c.data == "check_join")
+async def on_check_join(c: types.CallbackQuery, state: FSMContext):
+    await c.answer()
+    missing = await check_joined(c.from_user.id)
+    if missing:
+        await c.message.answer("<b>Join required to proceed.</b>", reply_markup=join_kbd())
+        return
+    joined_users.add(c.from_user.id)
+    await c.message.answer("<b>Send <code>Footer</code> text (or /skip):</b>")
+    await state.set_state(Flow.footer)
+
 @router.callback_query(lambda c: c.data == "edit_phone")
 async def edit_phone_callback(c: types.CallbackQuery, state: FSMContext):
     await c.answer()
