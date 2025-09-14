@@ -1112,7 +1112,7 @@ async def on_run(m: types.Message, state: FSMContext):
     await client.connect()
     if not await client.is_user_authorized():
         try:
-            await client.sign_in(phone=data["phone"], code=data["code"], phone_code_hash=data["code_hash"])
+            await client.sign_in(phone=data["phone"], code=data["code"])
         except SessionPasswordNeededError:
             pw = data.get("twofa")
             if not pw:
