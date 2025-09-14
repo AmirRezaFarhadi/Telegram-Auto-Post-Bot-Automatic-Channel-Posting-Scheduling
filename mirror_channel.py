@@ -1053,12 +1053,26 @@ async def on_api_hash(m: types.Message, state: FSMContext):
 async def on_session(m: types.Message, state: FSMContext):
     await state.update_data(session=m.text.strip())
     data = await state.get_data()
-    client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
-    await m.answer("Sending authentication code...")
-    try:
-        await client.connect()
-        res = await client.send_code_request(data["phone"])
-        await state.update_data(code_hash=res.phone_code_hash)
+
+    important
+    # client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
+    # await m.answer("Sending authentication code...")
+    # try:
+    #     await client.connect()
+    #     res = await client.send_code_request(data["phone"])
+    #     await state.update_data(code_hash=res.phone_code_hash)
+
+    session_name = os.path.join(SESSIONS_DIR, m.text.strip())
+client = TelegramClient(session_name, data["api_id"], data["api_hash"])
+await m.answer("Sending authentication code...")
+try:
+    await client.connect()
+    res = await client.send_code_request(data["phone"])
+    await state.update_data(session=m.text.strip(), code_hash=res.phone_code_hash)
+    await client.disconnect()
+
+
+
         builder = InlineKeyboardBuilder()
         builder.button(text="Edit Phone Number", callback_data="edit_phone")
         await m.answer("Enter the Telegram code you received:", reply_markup=builder.as_markup())
@@ -1107,11 +1121,31 @@ async def on_run(m: types.Message, state: FSMContext):
         return
 
     await state.clear()
-    client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
-    await client.connect()
-    if not await client.is_user_authorized():
-        try:
-            await client.sign_in(phone=data["phone"], code=data["code"], phone_code_hash=data["code_hash"])
+
+
+important
+    # client = TelegramClient(os.path.join(SESSIONS_DIR, data["session"]), data["api_id"], data["api_hash"])
+    # await client.connect()
+    # if not await client.is_user_authorized():
+    #     try:
+    #         await client.sign_in(phone=data["phone"], code=data["code"], phone_code_hash=data["code_hash"])
+
+
+
+session_name = os.path.join(SESSIONS_DIR, data["session"])
+client = TelegramClient(session_name, data["api_id"], data["api_hash"])
+await client.connect()
+if not await client.is_user_authorized():
+    try:
+        await client.sign_in(
+            phone=data["phone"],
+            code=data["code"],
+            phone_code_hash=data["code_hash"]
+        )
+
+
+
+    
         except SessionPasswordNeededError:
             pw = data.get("twofa")
             if not pw:
