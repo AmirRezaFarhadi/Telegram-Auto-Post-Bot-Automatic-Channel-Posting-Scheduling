@@ -57,13 +57,13 @@ python bot.py
 
 Your bot will now fetch the USDT price from Bit24 and post it to your channel.
 
-📝 Configuration (Optional)
+## 📝 Configuration (Optional)
 
 Edit the update interval in bot.py (default: every few minutes).
 
 Add more coins (BTC, ETH, etc.) by copying the function that fetches USDT and changing the endpoint.
 
-🧰 Technologies Used
+## 🧰 Technologies Used
 
 Python 3
 ```
@@ -71,7 +71,7 @@ Telegram Bot API (python-telegram-bot library)
 
 Requests (HTTP requests to Bit24 API)
 ```
-🔮 Future Ideas
+## 🔮 Future Ideas
 
 Add more currencies (BTC, ETH, DOGE, etc.)
 
@@ -79,15 +79,15 @@ Send alerts when price crosses a certain limit.
 
 Show charts in the channel.
 
-🤝 Contributing
+## 🤝 Contributing
 
 Pull requests are welcome! Please open an issue first to discuss what you would like to change.
 
-📄 License
+## 📄 License
 
 This project is licensed under the MIT License.
 
-🆘 Need Help?
+## 🆘 Need Help?
 
 If you get stuck:
 
